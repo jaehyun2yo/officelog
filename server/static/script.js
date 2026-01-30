@@ -217,7 +217,11 @@ async function loadComputers() {
                     <div>
                         <div class="computer-name">${displayName} ${showHostname} ${ipBadge}</div>
                         <div class="computer-info">
-                            ${pc.status === 'online' ? '마지막 확인: 방금 전' : '마지막 활동: ' + formatTimeAgo(pc.last_boot || pc.last_shutdown)}
+                            ${pc.status === 'online' ? '마지막 확인: 방금 전' : '마지막 활동: ' + formatTimeAgo(
+                                pc.last_boot && pc.last_shutdown
+                                    ? (pc.last_boot > pc.last_shutdown ? pc.last_boot : pc.last_shutdown)
+                                    : (pc.last_boot || pc.last_shutdown)
+                            )}
                         </div>
                     </div>
                     <span class="status ${pc.status}">
@@ -231,10 +235,6 @@ async function loadComputers() {
                 </div>
             </div>
         `}).join('');
-
-        document.getElementById('total-computers').textContent = data.computers.length;
-        document.getElementById('online-count').textContent =
-            data.computers.filter(pc => pc.status === 'online').length;
 
     } catch (error) {
         container.innerHTML = `<div class="empty-state"><p>데이터를 불러올 수 없습니다</p></div>`;
@@ -564,17 +564,40 @@ async function loadAllTimeline() {
     }
 }
 
-async function loadTodaySummary() {
-    const tbody = document.getElementById('today-summary-body');
-    const dateSpan = document.getElementById('today-date');
+// 로컬 시간대 기준 날짜 문자열 반환 (YYYY-MM-DD)
+function getLocalDateString(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
 
-    // 오늘 날짜 표시
-    const today = new Date();
-    const month = String(today.getMonth() + 1).padStart(2, '0');
-    const day = String(today.getDate()).padStart(2, '0');
-    const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
-    const dayName = dayNames[today.getDay()];
-    dateSpan.textContent = `(${month}/${day} ${dayName})`;
+// 날짜 변경 함수
+function changeDate(delta) {
+    const dateInput = document.getElementById('summary-date');
+    const currentDate = new Date(dateInput.value);
+    currentDate.setDate(currentDate.getDate() + delta);
+    dateInput.value = getLocalDateString(currentDate);
+    loadDateSummary();
+}
+
+// 오늘로 이동
+function goToToday() {
+    const dateInput = document.getElementById('summary-date');
+    dateInput.value = getLocalDateString(new Date());
+    loadDateSummary();
+}
+
+// 날짜 선택기 초기화
+function initDatePicker() {
+    const dateInput = document.getElementById('summary-date');
+    dateInput.value = getLocalDateString(new Date());
+}
+
+async function loadDateSummary() {
+    const tbody = document.getElementById('today-summary-body');
+    const dateInput = document.getElementById('summary-date');
+    const selectedDate = dateInput.value;
 
     try {
         // 1. 모든 등록된 컴퓨터 목록 조회
@@ -586,14 +609,13 @@ async function loadTodaySummary() {
             return;
         }
 
-        // 2. 오늘의 이벤트 조회
-        const summaryData = await fetchJSON('/api/daily-summary?days=1');
-        const todayStr = today.toISOString().split('T')[0];
-        const todayEvents = summaryData.summary.filter(s => s.date === todayStr);
+        // 2. 해당 날짜의 이벤트 조회 (30일치 가져와서 필터링)
+        const summaryData = await fetchJSON('/api/daily-summary?days=30');
+        const dateEvents = summaryData.summary.filter(s => s.date === selectedDate);
 
         // 3. 이벤트를 컴퓨터별 맵으로 변환
         const eventMap = {};
-        todayEvents.forEach(e => {
+        dateEvents.forEach(e => {
             eventMap[e.computer_name] = e;
         });
 
@@ -619,11 +641,177 @@ async function loadTodaySummary() {
     }
 }
 
+// 사용 현황 그래프 로드
+let usageChart = null;
+
+async function loadUsageChart() {
+    const ctx = document.getElementById('usage-chart');
+    if (!ctx) return;
+
+    try {
+        // 최근 7일간 데이터 조회
+        const summaryData = await fetchJSON('/api/daily-summary?days=7');
+        const computersData = await fetchJSON('/api/computers');
+
+        if (summaryData.summary.length === 0 || computersData.computers.length === 0) {
+            return;
+        }
+
+        // 날짜 목록 (최근 7일, 오래된 순)
+        const dates = [...new Set(summaryData.summary.map(s => s.date))].sort();
+        const computers = computersData.computers;
+
+        // 컴퓨터별 색상
+        const colors = [
+            { bg: 'rgba(52, 152, 219, 0.7)', border: 'rgb(52, 152, 219)' },
+            { bg: 'rgba(46, 204, 113, 0.7)', border: 'rgb(46, 204, 113)' },
+            { bg: 'rgba(155, 89, 182, 0.7)', border: 'rgb(155, 89, 182)' },
+            { bg: 'rgba(241, 196, 15, 0.7)', border: 'rgb(241, 196, 15)' },
+            { bg: 'rgba(230, 126, 34, 0.7)', border: 'rgb(230, 126, 34)' },
+            { bg: 'rgba(231, 76, 60, 0.7)', border: 'rgb(231, 76, 60)' },
+        ];
+
+        // 데이터 맵 생성
+        const dataMap = {};
+        summaryData.summary.forEach(s => {
+            if (!dataMap[s.date]) dataMap[s.date] = {};
+            dataMap[s.date][s.computer_name] = s;
+        });
+
+        // 데이터셋 생성 (각 컴퓨터별로 시작~종료 시간 막대)
+        const datasets = [];
+        computers.forEach((pc, idx) => {
+            const color = colors[idx % colors.length];
+            const displayName = pc.display_name || pc.computer_name;
+
+            // 시작 시간 데이터
+            const bootData = dates.map(date => {
+                const info = dataMap[date]?.[pc.computer_name];
+                if (info?.first_boot) {
+                    const [h, m] = info.first_boot.split(':').map(Number);
+                    return h + m / 60;
+                }
+                return null;
+            });
+
+            // 종료 시간 데이터
+            const shutdownData = dates.map(date => {
+                const info = dataMap[date]?.[pc.computer_name];
+                if (info?.last_shutdown) {
+                    const [h, m] = info.last_shutdown.split(':').map(Number);
+                    return h + m / 60;
+                }
+                return null;
+            });
+
+            // Floating bar chart (시작~종료)
+            const barData = dates.map((date, i) => {
+                if (bootData[i] !== null && shutdownData[i] !== null) {
+                    return [bootData[i], shutdownData[i]];
+                } else if (bootData[i] !== null) {
+                    return [bootData[i], bootData[i] + 0.5]; // 종료 없으면 시작만 표시
+                } else if (shutdownData[i] !== null) {
+                    return [shutdownData[i] - 0.5, shutdownData[i]]; // 시작 없으면 종료만 표시
+                }
+                return null;
+            });
+
+            datasets.push({
+                label: displayName,
+                data: barData,
+                backgroundColor: color.bg,
+                borderColor: color.border,
+                borderWidth: 1,
+                borderRadius: 4,
+                barPercentage: 0.6,
+                categoryPercentage: 0.8,
+            });
+        });
+
+        // 날짜 라벨 포맷팅
+        const labels = dates.map(date => {
+            const d = new Date(date);
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+            return `${month}/${day}(${dayNames[d.getDay()]})`;
+        });
+
+        // 기존 차트 제거
+        if (usageChart) {
+            usageChart.destroy();
+        }
+
+        // 차트 생성
+        usageChart = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: datasets
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                indexAxis: 'x',
+                scales: {
+                    y: {
+                        min: 6,
+                        max: 24,
+                        reverse: false,
+                        ticks: {
+                            stepSize: 2,
+                            callback: function(value) {
+                                return value + ':00';
+                            }
+                        },
+                        title: {
+                            display: true,
+                            text: '시간'
+                        }
+                    },
+                    x: {
+                        title: {
+                            display: true,
+                            text: '날짜'
+                        }
+                    }
+                },
+                plugins: {
+                    legend: {
+                        position: 'top',
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                const data = context.raw;
+                                if (Array.isArray(data)) {
+                                    const startH = Math.floor(data[0]);
+                                    const startM = Math.round((data[0] - startH) * 60);
+                                    const endH = Math.floor(data[1]);
+                                    const endM = Math.round((data[1] - endH) * 60);
+                                    const start = `${String(startH).padStart(2, '0')}:${String(startM).padStart(2, '0')}`;
+                                    const end = `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
+                                    return `${context.dataset.label}: ${start} ~ ${end}`;
+                                }
+                                return context.dataset.label;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+    } catch (error) {
+        console.error('Failed to load usage chart:', error);
+    }
+}
+
 function refreshAll() {
     loadComputers();
-    loadTodaySummary();
+    loadDateSummary();
     loadDailySummary();
     loadAllTimeline();
+    loadUsageChart();
 }
 
 // Enter 키로 이름 저장
@@ -651,6 +839,9 @@ document.getElementById('auth-password-confirm').addEventListener('keydown', (e)
 });
 
 document.addEventListener('DOMContentLoaded', async () => {
+    // 날짜 선택기 초기화
+    initDatePicker();
+
     // 인증 확인 후 데이터 로드
     const authenticated = await checkAuth();
     if (authenticated) {

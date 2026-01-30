@@ -647,9 +647,74 @@ header p {
     margin-bottom: 20px;
 }
 
-/* ==================== 오늘의 요약 ==================== */
-.today-summary-card {
+/* ==================== 컴퓨터 목록 & 일별 요약 ==================== */
+.computers-list-card {
     grid-column: 1 / -1;
+}
+
+.date-summary-card {
+    grid-column: 1 / -1;
+}
+
+/* 날짜 선택 UI */
+.date-picker {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 15px;
+    padding-bottom: 15px;
+    border-bottom: 1px solid #eee;
+}
+
+.date-picker input[type="date"] {
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.date-picker input[type="date"]:focus {
+    outline: none;
+    border-color: #3498db;
+    box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
+}
+
+.date-nav-btn {
+    background: #f8f9fa;
+    border: 1px solid #ddd;
+    padding: 8px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.2s;
+}
+
+.date-nav-btn:hover {
+    background: #e9ecef;
+    border-color: #ccc;
+}
+
+.today-btn {
+    background: #3498db;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: all 0.2s;
+}
+
+.today-btn:hover {
+    background: #2980b9;
+}
+
+/* 차트 컨테이너 */
+.chart-container {
+    position: relative;
+    height: 350px;
+    width: 100%;
 }
 
 .today-summary-card h2 .today-date {

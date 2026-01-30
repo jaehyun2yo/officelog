@@ -42,21 +42,7 @@
         </header>
 
         <div class="grid">
-            <div class="card">
-                <h2>통계</h2>
-                <div class="stats-grid">
-                    <div class="stat-item">
-                        <div class="stat-value" id="total-computers">0</div>
-                        <div class="stat-label">등록된 PC</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-value" id="online-count">0</div>
-                        <div class="stat-label">온라인</div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="card">
+            <div class="card computers-list-card">
                 <h2>컴퓨터 목록 <span class="subtitle">(클릭하여 이력 조회)</span></h2>
                 <div id="computers-list">
                     <div class="empty-state">
@@ -65,8 +51,14 @@
                 </div>
             </div>
 
-            <div class="card today-summary-card">
-                <h2>오늘의 요약 <span class="today-date" id="today-date"></span></h2>
+            <div class="card date-summary-card">
+                <h2>일별 요약</h2>
+                <div class="date-picker">
+                    <button class="date-nav-btn" onclick="changeDate(-1)">◀</button>
+                    <input type="date" id="summary-date" onchange="loadDateSummary()">
+                    <button class="date-nav-btn" onclick="changeDate(1)">▶</button>
+                    <button class="today-btn" onclick="goToToday()">오늘</button>
+                </div>
                 <table class="today-summary-table">
                     <thead>
                         <tr><th>컴퓨터</th><th>첫 시작</th><th>마지막 종료</th></tr>
@@ -95,6 +87,13 @@
                         <tr><td colspan="100" class="empty-state">로딩 중...</td></tr>
                     </tbody>
                 </table>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>사용 현황 그래프</h2>
+            <div class="chart-container">
+                <canvas id="usage-chart"></canvas>
             </div>
         </div>
 
@@ -186,6 +185,7 @@
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="/static/script.js"></script>
 </body>
 </html>
