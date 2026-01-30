@@ -10,9 +10,17 @@ import json
 import os
 import subprocess
 import sys
-import tkinter as tk
-from tkinter import messagebox
 from pathlib import Path
+
+# tkinter는 선택적 import (32비트 embeddable에서는 없을 수 있음)
+tk = None
+messagebox = None
+try:
+    import tkinter as tk
+    from tkinter import messagebox
+    HAS_GUI = True
+except ImportError:
+    HAS_GUI = False
 
 
 def is_admin() -> bool:
@@ -88,15 +96,16 @@ def create_task_scheduler_xml(event_type: str) -> str:
       <Enabled>true</Enabled>
     </LogonTrigger>"""
     elif event_type == 'heartbeat':
-        # 30초마다 반복 실행 (실시간 온라인 상태 확인용)
+        # 1분마다 반복 실행 (실시간 온라인 상태 확인용)
         trigger = """
-    <LogonTrigger>
+    <TimeTrigger>
       <Enabled>true</Enabled>
+      <StartBoundary>2020-01-01T00:00:00</StartBoundary>
       <Repetition>
-        <Interval>PT30S</Interval>
+        <Interval>PT1M</Interval>
         <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
-    </LogonTrigger>"""
+    </TimeTrigger>"""
     else:
         trigger = """
     <EventTrigger>
@@ -269,11 +278,11 @@ class InstallerGUI:
         if config.get('server_url'):
             self.url_entry.insert(0, config['server_url'])
         else:
-            self.url_entry.insert(0, "http://192.168.1.100:8000")
+            self.url_entry.insert(0, "http://")
 
         hint_label = tk.Label(
             main_frame,
-            text="예: http://192.168.1.100:8000",
+            text="예: http://서버IP:8000 또는 http://123.45.67.89:8000",
             font=("맑은 고딕", 9),
             fg="#888"
         )
@@ -398,6 +407,42 @@ def run_agent(event_type: str):
         send_event(server_url, event_type)
 
 
+def cli_install(server_url: str):
+    """명령줄 설치 (GUI 없이)"""
+    if not is_admin():
+        print("오류: 관리자 권한이 필요합니다.")
+        print("관리자 권한으로 다시 실행해주세요.")
+        sys.exit(1)
+
+    print(f"서버 주소: {server_url}")
+    print("설치 중...")
+
+    results = install_agent(server_url)
+    for name, success in results:
+        status = "성공" if success else "실패"
+        print(f"  {name}: {status}")
+
+    success_count = sum(1 for _, s in results if s)
+    if success_count == len(results):
+        print("\n설치 완료!")
+    else:
+        print("\n일부 작업이 실패했습니다.")
+
+
+def cli_uninstall():
+    """명령줄 제거 (GUI 없이)"""
+    if not is_admin():
+        print("오류: 관리자 권한이 필요합니다.")
+        sys.exit(1)
+
+    print("제거 중...")
+    results = uninstall_agent()
+    for name, success in results:
+        status = "성공" if success else "실패"
+        print(f"  {name}: {status}")
+    print("\n제거 완료!")
+
+
 def main():
     if len(sys.argv) > 1:
         if sys.argv[1] == '--run' and len(sys.argv) > 2:
@@ -406,8 +451,53 @@ def main():
                 run_agent(event_type)
             return
 
-    gui = InstallerGUI()
-    gui.run()
+        # 명령줄 설치/제거
+        if sys.argv[1] == '--install' and len(sys.argv) > 2:
+            cli_install(sys.argv[2])
+            return
+
+        if sys.argv[1] == '--uninstall':
+            cli_uninstall()
+            return
+
+        if sys.argv[1] == '--help':
+            print("ComputerOff Agent 설치 프로그램")
+            print("")
+            print("사용법:")
+            print("  computeroff-agent.exe                    GUI 설치")
+            print("  computeroff-agent.exe --install <URL>    명령줄 설치")
+            print("  computeroff-agent.exe --uninstall        명령줄 제거")
+            print("")
+            print("예시:")
+            print("  computeroff-agent.exe --install http://192.168.1.100:8000")
+            return
+
+    # GUI 모드
+    if not HAS_GUI:
+        # tkinter 없을 때 Windows MessageBox 사용
+        msg = (
+            "ComputerOff Agent 설치 프로그램\n\n"
+            "GUI를 사용할 수 없습니다.\n\n"
+            "명령 프롬프트(관리자)에서 실행하세요:\n\n"
+            "설치: agent-win32.exe --install http://서버주소:8000\n"
+            "제거: agent-win32.exe --uninstall\n\n"
+            "예: agent-win32.exe --install http://192.168.1.100:8000"
+        )
+        ctypes.windll.user32.MessageBoxW(0, msg, "ComputerOff Agent", 0x40)
+        return
+
+    try:
+        gui = InstallerGUI()
+        gui.run()
+    except Exception as e:
+        msg = (
+            f"GUI를 시작할 수 없습니다.\n\n"
+            f"사유: {e}\n\n"
+            "명령 프롬프트(관리자)에서 실행하세요:\n\n"
+            "설치: agent.exe --install http://서버주소:8000\n"
+            "제거: agent.exe --uninstall"
+        )
+        ctypes.windll.user32.MessageBoxW(0, msg, "ComputerOff Agent", 0x10)
 
 
 if __name__ == "__main__":

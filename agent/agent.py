@@ -6,10 +6,16 @@ Windows 7/8/10/11 호환 (Python 3.8)
 import json
 import socket
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
 import requests
+
+
+# 재시도 설정
+MAX_RETRIES = 3
+RETRY_DELAY = 2  # 초
 
 
 def get_config_path() -> Path:
@@ -29,37 +35,49 @@ def get_computer_name() -> str:
 
 
 def send_event(server_url: str, event_type: str) -> bool:
-    """이벤트를 서버로 전송"""
-    try:
-        url = f"{server_url.rstrip('/')}/api/events"
-        data = {
-            "computer_name": get_computer_name(),
-            "event_type": event_type,
-            "timestamp": datetime.now().isoformat()
-        }
+    """이벤트를 서버로 전송 (재시도 포함)"""
+    url = f"{server_url.rstrip('/')}/api/events"
+    data = {
+        "computer_name": get_computer_name(),
+        "event_type": event_type,
+        "timestamp": datetime.now().isoformat()
+    }
 
-        response = requests.post(url, json=data, timeout=10)
-        return response.status_code == 200
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = requests.post(url, json=data, timeout=15)
+            if response.status_code == 200:
+                return True
+            log_error(f"이벤트 전송 실패 (시도 {attempt + 1}/{MAX_RETRIES}): HTTP {response.status_code}")
+        except Exception as e:
+            log_error(f"이벤트 전송 실패 (시도 {attempt + 1}/{MAX_RETRIES}): {e}")
 
-    except Exception as e:
-        log_error(f"이벤트 전송 실패: {e}")
-        return False
+        if attempt < MAX_RETRIES - 1:
+            time.sleep(RETRY_DELAY)
+
+    return False
 
 
 def send_heartbeat(server_url: str) -> bool:
-    """하트비트를 서버로 전송 (실시간 온라인 상태용)"""
-    try:
-        url = f"{server_url.rstrip('/')}/api/heartbeat"
-        params = {
-            "computer_name": get_computer_name()
-        }
+    """하트비트를 서버로 전송 (실시간 온라인 상태용, 재시도 포함)"""
+    url = f"{server_url.rstrip('/')}/api/heartbeat"
+    params = {
+        "computer_name": get_computer_name()
+    }
 
-        response = requests.post(url, params=params, timeout=5)
-        return response.status_code == 200
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = requests.post(url, params=params, timeout=10)
+            if response.status_code == 200:
+                return True
+        except Exception as e:
+            # 하트비트는 로그 남기지 않음 (너무 자주 실행됨)
+            pass
 
-    except Exception as e:
-        log_error(f"하트비트 전송 실패: {e}")
-        return False
+        if attempt < MAX_RETRIES - 1:
+            time.sleep(1)
+
+    return False
 
 
 def log_error(message: str):

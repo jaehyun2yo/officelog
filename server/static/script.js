@@ -1,9 +1,136 @@
 const API_BASE = '';
 let currentComputer = null;
+let renameTarget = null;
+let deleteTarget = null;
+let isSettingPassword = false;
 
 async function fetchJSON(url) {
     const response = await fetch(url);
     return response.json();
+}
+
+// ==================== 인증 관련 ====================
+
+async function checkAuth() {
+    try {
+        const data = await fetchJSON('/api/auth/check');
+
+        if (!data.password_set) {
+            // 비밀번호 미설정 - 초기 설정 화면
+            showSetPasswordUI();
+            return false;
+        }
+
+        if (!data.authenticated) {
+            // 미인증 - 로그인 화면
+            showLoginUI();
+            return false;
+        }
+
+        // 인증됨 - 오버레이 숨김
+        hideAuthOverlay();
+        return true;
+    } catch (error) {
+        console.error('Auth check failed:', error);
+        return false;
+    }
+}
+
+function showSetPasswordUI() {
+    isSettingPassword = true;
+    document.getElementById('auth-subtitle').textContent = '초기 비밀번호 설정';
+    document.getElementById('auth-label').textContent = '새 비밀번호';
+    document.getElementById('auth-confirm-group').style.display = 'block';
+    document.getElementById('auth-submit').textContent = '설정 완료';
+    document.getElementById('auth-overlay').style.display = 'flex';
+    document.getElementById('auth-password').focus();
+}
+
+function showLoginUI() {
+    isSettingPassword = false;
+    document.getElementById('auth-subtitle').textContent = '관리자 로그인';
+    document.getElementById('auth-label').textContent = '비밀번호';
+    document.getElementById('auth-confirm-group').style.display = 'none';
+    document.getElementById('auth-submit').textContent = '로그인';
+    document.getElementById('auth-overlay').style.display = 'flex';
+    document.getElementById('auth-password').focus();
+}
+
+function hideAuthOverlay() {
+    document.getElementById('auth-overlay').style.display = 'none';
+    document.getElementById('auth-password').value = '';
+    document.getElementById('auth-password-confirm').value = '';
+    document.getElementById('auth-error').textContent = '';
+}
+
+async function handleAuth() {
+    const password = document.getElementById('auth-password').value;
+    const errorEl = document.getElementById('auth-error');
+    errorEl.textContent = '';
+
+    if (!password) {
+        errorEl.textContent = '비밀번호를 입력하세요.';
+        return;
+    }
+
+    if (isSettingPassword) {
+        // 비밀번호 설정
+        const confirm = document.getElementById('auth-password-confirm').value;
+        if (password !== confirm) {
+            errorEl.textContent = '비밀번호가 일치하지 않습니다.';
+            return;
+        }
+        if (password.length < 4) {
+            errorEl.textContent = '비밀번호는 최소 4자 이상이어야 합니다.';
+            return;
+        }
+
+        try {
+            const response = await fetch('/api/auth/set-password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password })
+            });
+
+            if (response.ok) {
+                hideAuthOverlay();
+                refreshAll();
+            } else {
+                const data = await response.json();
+                errorEl.textContent = data.detail || '설정에 실패했습니다.';
+            }
+        } catch (error) {
+            errorEl.textContent = '오류가 발생했습니다.';
+        }
+    } else {
+        // 로그인
+        try {
+            const response = await fetch('/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password })
+            });
+
+            if (response.ok) {
+                hideAuthOverlay();
+                refreshAll();
+            } else {
+                const data = await response.json();
+                errorEl.textContent = data.detail || '로그인에 실패했습니다.';
+            }
+        } catch (error) {
+            errorEl.textContent = '오류가 발생했습니다.';
+        }
+    }
+}
+
+async function logout() {
+    try {
+        await fetch('/api/auth/logout', { method: 'POST' });
+        showLoginUI();
+    } catch (error) {
+        console.error('Logout failed:', error);
+    }
 }
 
 function formatDateTime(isoString) {
@@ -70,20 +197,29 @@ async function loadComputers() {
             return;
         }
 
-        container.innerHTML = data.computers.map(pc => `
-            <div class="computer-item clickable" onclick="openHistory('${pc.computer_name}')">
-                <div>
-                    <div class="computer-name">${pc.computer_name}</div>
-                    <div class="computer-info">
-                        ${pc.status === 'online' ? '마지막 확인: 방금 전' : '마지막 활동: ' + formatTimeAgo(pc.last_boot || pc.last_shutdown)}
+        container.innerHTML = data.computers.map(pc => {
+            const displayName = pc.display_name || pc.computer_name;
+            const showHostname = pc.display_name ? `<span class="hostname-badge">${pc.computer_name}</span>` : '';
+            return `
+            <div class="computer-item">
+                <div class="computer-main clickable" onclick="openHistory('${pc.computer_name}')">
+                    <div>
+                        <div class="computer-name">${displayName} ${showHostname}</div>
+                        <div class="computer-info">
+                            ${pc.status === 'online' ? '마지막 확인: 방금 전' : '마지막 활동: ' + formatTimeAgo(pc.last_boot || pc.last_shutdown)}
+                        </div>
                     </div>
+                    <span class="status ${pc.status}">
+                        <span class="status-dot ${pc.status}"></span>
+                        ${pc.status === 'online' ? '온라인' : '오프라인'}
+                    </span>
                 </div>
-                <span class="status ${pc.status}">
-                    <span class="status-dot ${pc.status}"></span>
-                    ${pc.status === 'online' ? '온라인' : '오프라인'}
-                </span>
+                <div class="computer-actions">
+                    <button class="action-btn edit-btn" onclick="openRenameModal('${pc.computer_name}', '${pc.display_name || ''}')" title="이름 변경">✏️</button>
+                    <button class="action-btn delete-btn" onclick="openDeleteModal('${pc.computer_name}')" title="삭제">🗑️</button>
+                </div>
             </div>
-        `).join('');
+        `}).join('');
 
         document.getElementById('total-computers').textContent = data.computers.length;
         document.getElementById('online-count').textContent =
@@ -201,27 +337,190 @@ async function loadHistory() {
     }
 }
 
+// 이름 변경 모달 열기
+function openRenameModal(hostname, currentName) {
+    renameTarget = hostname;
+    document.getElementById('rename-hostname').textContent = hostname;
+    document.getElementById('new-display-name').value = currentName;
+    document.getElementById('rename-modal').classList.add('show');
+    document.getElementById('new-display-name').focus();
+}
+
+// 이름 변경 모달 닫기
+function closeRenameModal() {
+    document.getElementById('rename-modal').classList.remove('show');
+    renameTarget = null;
+}
+
+// 표시 이름 저장
+async function saveDisplayName() {
+    if (!renameTarget) return;
+
+    const newName = document.getElementById('new-display-name').value.trim();
+    if (!newName) {
+        alert('표시 이름을 입력하세요.');
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/computers/${encodeURIComponent(renameTarget)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ display_name: newName })
+        });
+
+        if (response.ok) {
+            closeRenameModal();
+            loadComputers();
+        } else {
+            alert('이름 변경에 실패했습니다.');
+        }
+    } catch (error) {
+        alert('오류가 발생했습니다.');
+    }
+}
+
+// 삭제 모달 열기
+function openDeleteModal(hostname) {
+    deleteTarget = hostname;
+    document.getElementById('delete-hostname').textContent = hostname;
+    document.getElementById('delete-modal').classList.add('show');
+}
+
+// 삭제 모달 닫기
+function closeDeleteModal() {
+    document.getElementById('delete-modal').classList.remove('show');
+    deleteTarget = null;
+}
+
+// 삭제 확인
+async function confirmDelete() {
+    if (!deleteTarget) return;
+
+    try {
+        const response = await fetch(`/api/computers/${encodeURIComponent(deleteTarget)}`, {
+            method: 'DELETE'
+        });
+
+        if (response.ok) {
+            closeDeleteModal();
+            refreshAll();
+        } else {
+            alert('삭제에 실패했습니다.');
+        }
+    } catch (error) {
+        alert('오류가 발생했습니다.');
+    }
+}
+
 // ESC 키로 모달 닫기
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
         closeModal();
+        closeRenameModal();
+        closeDeleteModal();
     }
 });
 
 // 모달 바깥 클릭 시 닫기
-document.getElementById('history-modal').addEventListener('click', (e) => {
-    if (e.target.classList.contains('modal')) {
-        closeModal();
-    }
+document.querySelectorAll('.modal').forEach(modal => {
+    modal.addEventListener('click', (e) => {
+        if (e.target.classList.contains('modal')) {
+            closeModal();
+            closeRenameModal();
+            closeDeleteModal();
+        }
+    });
 });
+
+async function loadTimeline() {
+    const days = document.getElementById('timeline-days').value;
+    const headerRow = document.getElementById('timeline-header');
+    const tbody = document.getElementById('timeline-body');
+
+    try {
+        const data = await fetchJSON(`/api/timeline/shutdown?days=${days}`);
+
+        if (data.computers.length === 0 || data.dates.length === 0) {
+            headerRow.innerHTML = '<th>날짜</th>';
+            tbody.innerHTML = '<tr><td colspan="100" class="empty-state">데이터가 없습니다</td></tr>';
+            return;
+        }
+
+        // 헤더 생성 (날짜 + 각 컴퓨터)
+        let headerHtml = '<th>날짜</th>';
+        data.computers.forEach(hostname => {
+            const displayName = data.display_names[hostname] || hostname;
+            headerHtml += `<th>${displayName}</th>`;
+        });
+        headerRow.innerHTML = headerHtml;
+
+        // 본문 생성 (각 날짜별 종료 시간)
+        let bodyHtml = '';
+        data.dates.forEach(date => {
+            bodyHtml += `<tr><td class="date-cell">${formatDateShort(date)}</td>`;
+            data.computers.forEach(hostname => {
+                const info = data.timeline[date]?.[hostname];
+                if (info) {
+                    bodyHtml += `<td class="time-cell">${info.time.substring(0, 5)}</td>`;
+                } else {
+                    bodyHtml += '<td class="time-cell empty">-</td>';
+                }
+            });
+            bodyHtml += '</tr>';
+        });
+        tbody.innerHTML = bodyHtml;
+
+    } catch (error) {
+        tbody.innerHTML = '<tr><td colspan="100" class="empty-state">데이터를 불러올 수 없습니다</td></tr>';
+    }
+}
+
+function formatDateShort(dateStr) {
+    const date = new Date(dateStr);
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+    const dayName = dayNames[date.getDay()];
+    return `${month}/${day} (${dayName})`;
+}
 
 function refreshAll() {
     loadComputers();
     loadEvents();
+    loadTimeline();
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-    refreshAll();
+// Enter 키로 이름 저장
+document.getElementById('new-display-name').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        saveDisplayName();
+    }
+});
+
+// Enter 키로 로그인/설정
+document.getElementById('auth-password').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        if (isSettingPassword) {
+            document.getElementById('auth-password-confirm').focus();
+        } else {
+            handleAuth();
+        }
+    }
+});
+
+document.getElementById('auth-password-confirm').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+        handleAuth();
+    }
+});
+
+document.addEventListener('DOMContentLoaded', async () => {
+    // 인증 확인 후 데이터 로드
+    const authenticated = await checkAuth();
+    if (authenticated) {
+        refreshAll();
+    }
     // 10초마다 자동 새로고침 (실시간 상태 확인)
     setInterval(refreshAll, 10000);
 });

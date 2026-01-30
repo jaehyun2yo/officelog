@@ -2,7 +2,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -25,6 +25,18 @@ class EventResponse(BaseModel):
     event_type: str
     timestamp: str
     created_at: str
+
+
+class ComputerUpdate(BaseModel):
+    display_name: str
+
+
+class LoginRequest(BaseModel):
+    password: str
+
+
+class PasswordRequest(BaseModel):
+    password: str
 
 
 @app.on_event("startup")
@@ -91,6 +103,99 @@ def get_computer_history(computer_name: str, days: int = 30):
     return {"computer_name": computer_name, "history": history, "days": days}
 
 
+@app.put("/api/computers/{hostname}")
+def update_computer(hostname: str, data: ComputerUpdate):
+    """컴퓨터 표시 이름 변경"""
+    database.set_computer_display_name(hostname, data.display_name)
+    return {"status": "ok", "hostname": hostname, "display_name": data.display_name}
+
+
+@app.delete("/api/computers/{hostname}")
+def delete_computer(hostname: str):
+    """컴퓨터 및 관련 이벤트 삭제"""
+    deleted_events = database.delete_computer(hostname)
+    return {"status": "ok", "hostname": hostname, "deleted_events": deleted_events}
+
+
+# ==================== 인증 API ====================
+
+@app.get("/api/auth/check")
+def check_auth(request: Request):
+    """인증 상태 확인"""
+    password_set = database.is_password_set()
+
+    if not password_set:
+        return {"authenticated": False, "password_set": False}
+
+    session = request.cookies.get("session")
+    authenticated = database.validate_session(session) if session else False
+    return {"authenticated": authenticated, "password_set": True}
+
+
+@app.post("/api/auth/set-password")
+def set_password(data: PasswordRequest, response: Response):
+    """최초 비밀번호 설정"""
+    if database.is_password_set():
+        raise HTTPException(status_code=400, detail="비밀번호가 이미 설정되어 있습니다")
+
+    if len(data.password) < 4:
+        raise HTTPException(status_code=400, detail="비밀번호는 최소 4자 이상이어야 합니다")
+
+    hashed = database.hash_password(data.password)
+    database.set_setting('admin_password', hashed)
+
+    # 자동 로그인
+    session_id = database.create_session()
+    response.set_cookie(
+        key="session",
+        value=session_id,
+        httponly=True,
+        max_age=86400,  # 24시간
+        samesite="lax"
+    )
+
+    return {"status": "ok"}
+
+
+@app.post("/api/auth/login")
+def login(data: LoginRequest, response: Response):
+    """로그인"""
+    if not database.is_password_set():
+        raise HTTPException(status_code=400, detail="비밀번호가 설정되지 않았습니다")
+
+    if not database.verify_password(data.password):
+        raise HTTPException(status_code=401, detail="비밀번호가 일치하지 않습니다")
+
+    session_id = database.create_session()
+    response.set_cookie(
+        key="session",
+        value=session_id,
+        httponly=True,
+        max_age=86400,
+        samesite="lax"
+    )
+
+    return {"status": "ok"}
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request, response: Response):
+    """로그아웃"""
+    session = request.cookies.get("session")
+    if session:
+        database.delete_session(session)
+    response.delete_cookie("session")
+    return {"status": "ok"}
+
+
+# ==================== 타임라인 API ====================
+
+@app.get("/api/timeline/shutdown")
+def get_shutdown_timeline(days: int = 7):
+    """날짜별 종료 이벤트 타임라인"""
+    return database.get_shutdown_timeline(days)
+
+
 static_path = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 
@@ -101,5 +206,7 @@ def dashboard():
 
 
 if __name__ == "__main__":
+    import os
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)

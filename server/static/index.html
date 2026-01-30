@@ -3,17 +3,41 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ComputerOff - 컴퓨터 온오프 모니터링</title>
+    <title>오피스관리페이지</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+    <!-- 로그인 오버레이 -->
+    <div id="auth-overlay" class="auth-overlay">
+        <div class="auth-box">
+            <div class="auth-header">
+                <h1>오피스관리페이지</h1>
+                <p id="auth-subtitle">관리자 로그인</p>
+            </div>
+            <div class="auth-body">
+                <div id="auth-form">
+                    <div class="form-group">
+                        <label for="auth-password" id="auth-label">비밀번호</label>
+                        <input type="password" id="auth-password" placeholder="비밀번호 입력">
+                    </div>
+                    <div id="auth-confirm-group" class="form-group" style="display: none;">
+                        <label for="auth-password-confirm">비밀번호 확인</label>
+                        <input type="password" id="auth-password-confirm" placeholder="비밀번호 다시 입력">
+                    </div>
+                    <div id="auth-error" class="auth-error"></div>
+                    <button id="auth-submit" class="btn btn-primary btn-block" onclick="handleAuth()">로그인</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="container">
         <header>
-            <h1>ComputerOff</h1>
-            <p>컴퓨터 온오프 시간 모니터링 대시보드</p>
+            <h1>오피스관리페이지</h1>
             <div class="header-right">
                 <span class="live-indicator">● LIVE</span>
                 <button class="refresh-btn" onclick="refreshAll()">새로고침</button>
+                <button class="logout-btn" onclick="logout()">로그아웃</button>
             </div>
         </header>
 
@@ -54,6 +78,32 @@
                 </div>
             </div>
         </div>
+
+        <div class="card">
+            <h2>종료 타임라인</h2>
+            <div class="timeline-filter">
+                <label>조회 기간:</label>
+                <select id="timeline-days" onchange="loadTimeline()">
+                    <option value="7" selected>최근 7일</option>
+                    <option value="14">최근 14일</option>
+                    <option value="30">최근 30일</option>
+                </select>
+            </div>
+            <div class="timeline-wrapper">
+                <table class="timeline-table" id="timeline-table">
+                    <thead>
+                        <tr id="timeline-header">
+                            <th>날짜</th>
+                        </tr>
+                    </thead>
+                    <tbody id="timeline-body">
+                        <tr>
+                            <td colspan="100" class="empty-state">로딩 중...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
     </div>
 
     <!-- 이력 조회 모달 -->
@@ -75,6 +125,47 @@
                 </div>
                 <div id="history-list" class="history-list">
                     <div class="empty-state"><p>로딩 중...</p></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 이름 변경 모달 -->
+    <div id="rename-modal" class="modal">
+        <div class="modal-content modal-small">
+            <div class="modal-header">
+                <h2>컴퓨터 이름 변경</h2>
+                <button class="modal-close" onclick="closeRenameModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="modal-label">호스트명: <strong id="rename-hostname"></strong></p>
+                <div class="form-group">
+                    <label for="new-display-name">표시 이름:</label>
+                    <input type="text" id="new-display-name" placeholder="새 표시 이름 입력">
+                </div>
+                <div class="modal-actions">
+                    <button class="btn btn-secondary" onclick="closeRenameModal()">취소</button>
+                    <button class="btn btn-primary" onclick="saveDisplayName()">저장</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 삭제 확인 모달 -->
+    <div id="delete-modal" class="modal">
+        <div class="modal-content modal-small">
+            <div class="modal-header modal-header-danger">
+                <h2>컴퓨터 삭제</h2>
+                <button class="modal-close" onclick="closeDeleteModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="delete-warning">
+                    <strong id="delete-hostname"></strong>을(를) 삭제하시겠습니까?
+                </p>
+                <p class="delete-info">이 작업은 해당 컴퓨터의 모든 이벤트 기록을 삭제합니다.</p>
+                <div class="modal-actions">
+                    <button class="btn btn-secondary" onclick="closeDeleteModal()">취소</button>
+                    <button class="btn btn-danger" onclick="confirmDelete()">삭제</button>
                 </div>
             </div>
         </div>
