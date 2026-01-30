@@ -85,6 +85,22 @@
                 </table>
             </div>
         </div>
+
+        <div class="card">
+            <h2>전체 이벤트 타임라인 <span class="subtitle">(모든 컴퓨터)</span></h2>
+            <div class="timeline-filter">
+                <label>조회 기간:</label>
+                <select id="timeline-days" onchange="loadAllTimeline()">
+                    <option value="1">오늘</option>
+                    <option value="3" selected>최근 3일</option>
+                    <option value="7">최근 7일</option>
+                    <option value="14">최근 14일</option>
+                </select>
+            </div>
+            <div id="all-timeline" class="all-timeline-list">
+                <div class="empty-state"><p>로딩 중...</p></div>
+            </div>
+        </div>
     </div>
 
     <!-- 이력 조회 모달 -->
@@ -95,14 +111,20 @@
                 <button class="modal-close" onclick="closeModal()">&times;</button>
             </div>
             <div class="modal-body">
-                <div class="date-filter">
-                    <label>조회 기간:</label>
-                    <select id="days-filter" onchange="loadHistory()">
-                        <option value="7">최근 7일</option>
-                        <option value="14">최근 14일</option>
-                        <option value="30" selected>최근 30일</option>
-                        <option value="90">최근 90일</option>
-                    </select>
+                <div class="history-controls">
+                    <div class="view-toggle">
+                        <button id="view-summary" class="toggle-btn active" onclick="setHistoryView('summary')">요약</button>
+                        <button id="view-detail" class="toggle-btn" onclick="setHistoryView('detail')">상세</button>
+                    </div>
+                    <div class="date-filter">
+                        <label>조회 기간:</label>
+                        <select id="days-filter" onchange="loadHistory()">
+                            <option value="7">최근 7일</option>
+                            <option value="14">최근 14일</option>
+                            <option value="30" selected>최근 30일</option>
+                            <option value="90">최근 90일</option>
+                        </select>
+                    </div>
                 </div>
                 <div id="history-list" class="history-list">
                     <div class="empty-state"><p>로딩 중...</p></div>

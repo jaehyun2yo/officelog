@@ -210,6 +210,20 @@ def get_daily_summary_api(days: int = 7):
     return {"summary": summary, "days": days}
 
 
+@app.get("/api/computers/{computer_name}/daily-summary")
+def get_computer_daily_summary_api(computer_name: str, days: int = 30):
+    """특정 컴퓨터의 하루 단위 시작/종료 요약"""
+    summary = database.get_computer_daily_summary(computer_name, days)
+    return {"computer_name": computer_name, "summary": summary, "days": days}
+
+
+@app.get("/api/timeline/all")
+def get_all_events_timeline_api(days: int = 7, limit: int = 100):
+    """전체 컴퓨터 이벤트 타임라인"""
+    events = database.get_all_events_timeline(days, limit)
+    return {"events": events, "days": days, "count": len(events)}
+
+
 static_path = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 

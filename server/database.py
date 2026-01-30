@@ -514,3 +514,49 @@ def get_daily_summary(days: int = 7) -> list[dict]:
         data['display_name'] = display_names.get(data['computer_name'])
         result.append(data)
     return result
+
+
+def get_computer_daily_summary(computer_name: str, days: int = 30) -> list[dict]:
+    """특정 컴퓨터의 하루 단위 시작/종료 요약 조회"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT
+            DATE(timestamp) as date,
+            MIN(CASE WHEN event_type = 'boot' THEN TIME(timestamp) END) as first_boot,
+            MAX(CASE WHEN event_type = 'shutdown' THEN TIME(timestamp) END) as last_shutdown,
+            SUM(CASE WHEN event_type = 'boot' THEN 1 ELSE 0 END) as boot_count,
+            SUM(CASE WHEN event_type = 'shutdown' THEN 1 ELSE 0 END) as shutdown_count
+        FROM events
+        WHERE computer_name = ?
+        AND timestamp >= DATE('now', '+9 hours', ?)
+        AND event_type IN ('boot', 'shutdown')
+        GROUP BY DATE(timestamp)
+        ORDER BY date DESC
+    """, (computer_name, f'-{days} days'))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_all_events_timeline(days: int = 7, limit: int = 100) -> list[dict]:
+    """전체 컴퓨터의 이벤트를 시간순으로 조회"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT
+            e.id,
+            e.computer_name,
+            e.event_type,
+            e.timestamp,
+            c.display_name
+        FROM events e
+        LEFT JOIN computers c ON e.computer_name = c.hostname
+        WHERE e.timestamp >= DATE('now', '+9 hours', ?)
+        AND e.event_type IN ('boot', 'shutdown')
+        ORDER BY e.timestamp DESC
+        LIMIT ?
+    """, (f'-{days} days', limit))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]

@@ -4,6 +4,7 @@ let renameTarget = null;
 let deleteTarget = null;
 let isSettingPassword = false;
 let displayNameMap = {};  // hostname -> display_name 매핑
+let historyViewMode = 'summary';  // 'summary' or 'detail'
 
 async function fetchJSON(url) {
     const response = await fetch(url);
@@ -240,12 +241,24 @@ async function loadComputers() {
     }
 }
 
+// 히스토리 뷰 모드 설정
+function setHistoryView(mode) {
+    historyViewMode = mode;
+    document.getElementById('view-summary').classList.toggle('active', mode === 'summary');
+    document.getElementById('view-detail').classList.toggle('active', mode === 'detail');
+    loadHistory();
+}
+
 // 모달 열기
 function openHistory(computerName) {
     currentComputer = computerName;
     const displayName = displayNameMap[computerName] || computerName;
     document.getElementById('modal-title').textContent = `${displayName} 이력`;
     document.getElementById('history-modal').classList.add('show');
+    // 기본값 요약 뷰로 설정
+    historyViewMode = 'summary';
+    document.getElementById('view-summary').classList.add('active');
+    document.getElementById('view-detail').classList.remove('active');
     loadHistory();
 }
 
@@ -265,48 +278,84 @@ async function loadHistory() {
     container.innerHTML = '<div class="empty-state"><p>로딩 중...</p></div>';
 
     try {
-        const data = await fetchJSON(`/api/computers/${encodeURIComponent(currentComputer)}/history?days=${days}`);
+        if (historyViewMode === 'summary') {
+            // 요약 뷰 - 하루 단위로 첫 시작 / 마지막 종료
+            const data = await fetchJSON(`/api/computers/${encodeURIComponent(currentComputer)}/daily-summary?days=${days}`);
 
-        if (data.history.length === 0) {
-            container.innerHTML = `
-                <div class="empty-state">
-                    <p>해당 기간에 기록된 이벤트가 없습니다</p>
-                </div>
-            `;
-            return;
-        }
-
-        // 날짜별로 그룹화
-        const grouped = {};
-        data.history.forEach(event => {
-            const date = formatDate(event.timestamp);
-            if (!grouped[date]) {
-                grouped[date] = [];
-            }
-            grouped[date].push(event);
-        });
-
-        let html = '';
-        for (const [date, events] of Object.entries(grouped)) {
-            html += `<div class="history-date-group">`;
-            html += `<div class="history-date">${date}</div>`;
-            html += `<div class="history-events">`;
-
-            events.forEach(event => {
-                html += `
-                    <div class="history-event ${event.event_type}">
-                        <span class="history-time">${formatTime(event.timestamp)}</span>
-                        <span class="history-type ${event.event_type}">
-                            ${event.event_type === 'boot' ? '▲ 컴퓨터 시작' : '▼ 컴퓨터 종료'}
-                        </span>
+            if (data.summary.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <p>해당 기간에 기록된 이벤트가 없습니다</p>
                     </div>
+                `;
+                return;
+            }
+
+            let html = '<div class="summary-table-wrapper"><table class="summary-table">';
+            html += '<thead><tr><th>날짜</th><th>첫 시작</th><th>마지막 종료</th></tr></thead>';
+            html += '<tbody>';
+
+            data.summary.forEach(item => {
+                const dateStr = formatDateShort(item.date);
+                const firstBoot = item.first_boot ? item.first_boot.substring(0, 5) : '-';
+                const lastShutdown = item.last_shutdown ? item.last_shutdown.substring(0, 5) : '-';
+                html += `
+                    <tr>
+                        <td class="date-cell">${dateStr}</td>
+                        <td class="time-cell boot">${firstBoot}</td>
+                        <td class="time-cell shutdown">${lastShutdown}</td>
+                    </tr>
                 `;
             });
 
-            html += `</div></div>`;
-        }
+            html += '</tbody></table></div>';
+            container.innerHTML = html;
 
-        container.innerHTML = html;
+        } else {
+            // 상세 뷰 - 모든 이벤트 표시
+            const data = await fetchJSON(`/api/computers/${encodeURIComponent(currentComputer)}/history?days=${days}`);
+
+            if (data.history.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <p>해당 기간에 기록된 이벤트가 없습니다</p>
+                    </div>
+                `;
+                return;
+            }
+
+            // 날짜별로 그룹화
+            const grouped = {};
+            data.history.forEach(event => {
+                const date = formatDate(event.timestamp);
+                if (!grouped[date]) {
+                    grouped[date] = [];
+                }
+                grouped[date].push(event);
+            });
+
+            let html = '';
+            for (const [date, events] of Object.entries(grouped)) {
+                html += `<div class="history-date-group">`;
+                html += `<div class="history-date">${date}</div>`;
+                html += `<div class="history-events">`;
+
+                events.forEach(event => {
+                    html += `
+                        <div class="history-event ${event.event_type}">
+                            <span class="history-time">${formatTime(event.timestamp)}</span>
+                            <span class="history-type ${event.event_type}">
+                                ${event.event_type === 'boot' ? '▲ 컴퓨터 시작' : '▼ 컴퓨터 종료'}
+                            </span>
+                        </div>
+                    `;
+                });
+
+                html += `</div></div>`;
+            }
+
+            container.innerHTML = html;
+        }
 
     } catch (error) {
         container.innerHTML = `<div class="empty-state"><p>데이터를 불러올 수 없습니다</p></div>`;
@@ -460,9 +509,65 @@ function formatDateShort(dateStr) {
     return `${month}/${day} (${dayName})`;
 }
 
+async function loadAllTimeline() {
+    const container = document.getElementById('all-timeline');
+    const days = document.getElementById('timeline-days').value;
+
+    try {
+        const data = await fetchJSON(`/api/timeline/all?days=${days}&limit=100`);
+
+        if (data.events.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <p>해당 기간에 기록된 이벤트가 없습니다</p>
+                </div>
+            `;
+            return;
+        }
+
+        // 날짜별로 그룹화
+        const grouped = {};
+        data.events.forEach(event => {
+            const date = formatDate(event.timestamp);
+            if (!grouped[date]) {
+                grouped[date] = [];
+            }
+            grouped[date].push(event);
+        });
+
+        let html = '';
+        for (const [date, events] of Object.entries(grouped)) {
+            html += `<div class="timeline-date-group">`;
+            html += `<div class="timeline-date-header">${date}</div>`;
+            html += `<div class="timeline-events">`;
+
+            events.forEach(event => {
+                const displayName = event.display_name || event.computer_name;
+                const eventIcon = event.event_type === 'boot' ? '▲' : '▼';
+                const eventText = event.event_type === 'boot' ? '시작' : '종료';
+                html += `
+                    <div class="timeline-event ${event.event_type}">
+                        <span class="timeline-time">${formatTime(event.timestamp)}</span>
+                        <span class="timeline-computer">${displayName}</span>
+                        <span class="timeline-type ${event.event_type}">${eventIcon} ${eventText}</span>
+                    </div>
+                `;
+            });
+
+            html += `</div></div>`;
+        }
+
+        container.innerHTML = html;
+
+    } catch (error) {
+        container.innerHTML = `<div class="empty-state"><p>데이터를 불러올 수 없습니다</p></div>`;
+    }
+}
+
 function refreshAll() {
     loadComputers();
     loadDailySummary();
+    loadAllTimeline();
 }
 
 // Enter 키로 이름 저장
