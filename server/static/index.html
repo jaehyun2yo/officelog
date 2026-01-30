@@ -53,10 +53,6 @@
                         <div class="stat-value" id="online-count">0</div>
                         <div class="stat-label">온라인</div>
                     </div>
-                    <div class="stat-item">
-                        <div class="stat-value" id="total-events">0</div>
-                        <div class="stat-label">총 이벤트</div>
-                    </div>
                 </div>
             </div>
 
@@ -71,35 +67,20 @@
         </div>
 
         <div class="card">
-            <h2>최근 이벤트</h2>
-            <div class="event-list" id="events-list">
-                <div class="empty-state">
-                    <p>로딩 중...</p>
-                </div>
-            </div>
-        </div>
-
-        <div class="card">
-            <h2>종료 타임라인</h2>
+            <h2>일별 사용 현황</h2>
             <div class="timeline-filter">
                 <label>조회 기간:</label>
-                <select id="timeline-days" onchange="loadTimeline()">
+                <select id="summary-days" onchange="loadDailySummary()">
                     <option value="7" selected>최근 7일</option>
                     <option value="14">최근 14일</option>
                     <option value="30">최근 30일</option>
                 </select>
             </div>
             <div class="timeline-wrapper">
-                <table class="timeline-table" id="timeline-table">
-                    <thead>
-                        <tr id="timeline-header">
-                            <th>날짜</th>
-                        </tr>
-                    </thead>
-                    <tbody id="timeline-body">
-                        <tr>
-                            <td colspan="100" class="empty-state">로딩 중...</td>
-                        </tr>
+                <table class="timeline-table" id="summary-table">
+                    <thead><tr><th>날짜</th></tr></thead>
+                    <tbody id="summary-body">
+                        <tr><td colspan="100" class="empty-state">로딩 중...</td></tr>
                     </tbody>
                 </table>
             </div>

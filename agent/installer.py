@@ -9,10 +9,11 @@ import ctypes
 import json
 import os
 import socket
+import struct
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import requests
@@ -64,13 +65,42 @@ def log_error(message: str):
         pass
 
 
+def get_ntp_time(ntp_server: str = "time.windows.com", timeout: int = 5) -> datetime:
+    """NTP 서버에서 한국 시간 가져오기 (UTC+9)"""
+    NTP_DELTA = 2208988800
+    try:
+        data = b'\x1b' + 47 * b'\0'
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(timeout)
+        sock.sendto(data, (ntp_server, 123))
+        response, _ = sock.recvfrom(1024)
+        sock.close()
+        timestamp = struct.unpack('!I', response[40:44])[0]
+        utc_time = datetime.utcfromtimestamp(timestamp - NTP_DELTA)
+        return utc_time + timedelta(hours=9)
+    except Exception as e:
+        log_error(f"NTP 시간 조회 실패: {e}")
+        return datetime.now()
+
+
+def get_korea_time() -> datetime:
+    """한국 시간 반환 (NTP 우선, 실패 시 로컬)"""
+    for server in ["time.windows.com", "ntp.kornet.net", "time.google.com"]:
+        try:
+            return get_ntp_time(server)
+        except:
+            continue
+    return datetime.now()
+
+
 def send_event(server_url: str, event_type: str) -> bool:
     """이벤트를 서버로 전송 (재시도 포함)"""
     url = f"{server_url.rstrip('/')}/api/events"
+    korea_time = get_korea_time()
     data = {
         "computer_name": get_computer_name(),
         "event_type": event_type,
-        "timestamp": datetime.now().isoformat()
+        "timestamp": korea_time.isoformat()
     }
 
     for attempt in range(MAX_RETRIES):
@@ -256,7 +286,10 @@ def register_task(task_name: str, event_type: str) -> bool:
             text=True
         )
 
-        xml_path.unlink(missing_ok=True)
+        try:
+            xml_path.unlink()
+        except FileNotFoundError:
+            pass
 
         return result.returncode == 0
 

@@ -166,7 +166,7 @@ def get_computers() -> list[dict]:
             result_check = cursor.fetchone()
             seconds_ago = result_check['seconds_ago'] if result_check else 9999
 
-            data['status'] = 'online' if seconds_ago < 90 else 'offline'
+            data['status'] = 'online' if seconds_ago < 60 else 'offline'
             data['seconds_ago'] = int(seconds_ago)
         else:
             # 하트비트 없으면 이벤트 기반으로 판단
@@ -239,13 +239,14 @@ def register_computer(computer_name: str, ip_address: Optional[str] = None):
 
 
 def get_computer_history(computer_name: str, days: int = 30) -> list[dict]:
-    """특정 컴퓨터의 이벤트 이력 조회"""
+    """특정 컴퓨터의 boot/shutdown 이벤트 이력 조회"""
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("""
         SELECT * FROM events
         WHERE computer_name = ?
+        AND event_type IN ('boot', 'shutdown')
         AND timestamp >= datetime('now', '+9 hours', ?)
         ORDER BY timestamp DESC
     """, (computer_name, f'-{days} days'))
@@ -486,3 +487,30 @@ def get_shutdown_timeline(days: int = 7) -> dict:
         'display_names': display_names,
         'timeline': timeline
     }
+
+
+def get_daily_summary(days: int = 7) -> list[dict]:
+    """하루 단위 시작/종료 요약 조회"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT
+            DATE(timestamp) as date,
+            computer_name,
+            MIN(CASE WHEN event_type = 'boot' THEN TIME(timestamp) END) as first_boot,
+            MAX(CASE WHEN event_type = 'shutdown' THEN TIME(timestamp) END) as last_shutdown
+        FROM events
+        WHERE timestamp >= DATE('now', '+9 hours', ?)
+        AND event_type IN ('boot', 'shutdown')
+        GROUP BY DATE(timestamp), computer_name
+        ORDER BY date DESC, computer_name
+    """, (f'-{days} days',))
+    rows = cursor.fetchall()
+    conn.close()
+    display_names = get_all_display_names()
+    result = []
+    for row in rows:
+        data = dict(row)
+        data['display_name'] = display_names.get(data['computer_name'])
+        result.append(data)
+    return result

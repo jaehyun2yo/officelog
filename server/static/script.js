@@ -134,20 +134,9 @@ async function logout() {
     }
 }
 
-function parseKoreanTime(isoString) {
-    // timezone 정보가 없으면 UTC로 저장된 것으로 가정하고 한국 시간(+9시간)으로 변환
-    if (!isoString) return null;
-    if (!isoString.includes('+') && !isoString.includes('Z')) {
-        // UTC로 파싱 후 9시간 추가 (한국 시간 = UTC + 9)
-        const utcDate = new Date(isoString + 'Z');
-        return new Date(utcDate.getTime() + 9 * 60 * 60 * 1000);
-    }
-    return new Date(isoString);
-}
-
 function formatDateTime(isoString) {
     if (!isoString) return '-';
-    const date = parseKoreanTime(isoString);
+    const date = new Date(isoString);
     return date.toLocaleString('ko-KR', {
         year: 'numeric',
         month: '2-digit',
@@ -160,7 +149,7 @@ function formatDateTime(isoString) {
 
 function formatDate(isoString) {
     if (!isoString) return '-';
-    const date = parseKoreanTime(isoString);
+    const date = new Date(isoString);
     return date.toLocaleString('ko-KR', {
         year: 'numeric',
         month: '2-digit',
@@ -170,7 +159,7 @@ function formatDate(isoString) {
 
 function formatTime(isoString) {
     if (!isoString) return '-';
-    const date = parseKoreanTime(isoString);
+    const date = new Date(isoString);
     return date.toLocaleString('ko-KR', {
         hour: '2-digit',
         minute: '2-digit',
@@ -180,7 +169,7 @@ function formatTime(isoString) {
 
 function formatTimeAgo(isoString) {
     if (!isoString) return '-';
-    const date = parseKoreanTime(isoString);
+    const date = new Date(isoString);
     const now = new Date();
     const diffMs = now - date;
     const diffMins = Math.floor(diffMs / 60000);
@@ -251,47 +240,11 @@ async function loadComputers() {
     }
 }
 
-async function loadEvents() {
-    const container = document.getElementById('events-list');
-
-    try {
-        const data = await fetchJSON('/api/events?limit=50');
-
-        if (data.events.length === 0) {
-            container.innerHTML = `
-                <div class="empty-state">
-                    <p>기록된 이벤트가 없습니다</p>
-                </div>
-            `;
-            return;
-        }
-
-        container.innerHTML = data.events.map(event => {
-            const displayName = displayNameMap[event.computer_name] || event.computer_name;
-            return `
-            <div class="event-item ${event.event_type}">
-                <div class="event-icon">
-                    ${event.event_type === 'boot' ? '▲' : '▼'}
-                </div>
-                <div class="event-details">
-                    <div class="event-computer">${displayName}</div>
-                    <div class="event-time">${formatDateTime(event.timestamp)}</div>
-                </div>
-                <span class="event-type">${event.event_type === 'boot' ? '컴퓨터 시작' : '컴퓨터 종료'}</span>
-            </div>
-        `}).join('');
-
-        document.getElementById('total-events').textContent = data.count;
-
-    } catch (error) {
-        container.innerHTML = `<div class="empty-state"><p>데이터를 불러올 수 없습니다</p></div>`;
-    }
-}
-
 // 모달 열기
 function openHistory(computerName) {
     currentComputer = computerName;
-    document.getElementById('modal-title').textContent = `${computerName} 이력`;
+    const displayName = displayNameMap[computerName] || computerName;
+    document.getElementById('modal-title').textContent = `${displayName} 이력`;
     document.getElementById('history-modal').classList.add('show');
     loadHistory();
 }
@@ -456,36 +409,36 @@ document.querySelectorAll('.modal').forEach(modal => {
     });
 });
 
-async function loadTimeline() {
-    const days = document.getElementById('timeline-days').value;
-    const headerRow = document.getElementById('timeline-header');
-    const tbody = document.getElementById('timeline-body');
-
+async function loadDailySummary() {
+    const days = document.getElementById('summary-days').value;
+    const tbody = document.getElementById('summary-body');
     try {
-        const data = await fetchJSON(`/api/timeline/shutdown?days=${days}`);
-
-        if (data.computers.length === 0 || data.dates.length === 0) {
-            headerRow.innerHTML = '<th>날짜</th>';
+        const data = await fetchJSON(`/api/daily-summary?days=${days}`);
+        if (data.summary.length === 0) {
             tbody.innerHTML = '<tr><td colspan="100" class="empty-state">데이터가 없습니다</td></tr>';
             return;
         }
-
-        // 헤더 생성 (날짜 + 각 컴퓨터)
+        const dates = [...new Set(data.summary.map(s => s.date))].sort().reverse();
+        const computers = [...new Set(data.summary.map(s => s.computer_name))];
         let headerHtml = '<th>날짜</th>';
-        data.computers.forEach(hostname => {
-            const displayName = data.display_names[hostname] || hostname;
-            headerHtml += `<th>${displayName}</th>`;
+        computers.forEach(hostname => {
+            headerHtml += `<th>${displayNameMap[hostname] || hostname}</th>`;
         });
-        headerRow.innerHTML = headerHtml;
-
-        // 본문 생성 (각 날짜별 종료 시간)
+        document.querySelector('#summary-table thead tr').innerHTML = headerHtml;
+        const dataMap = {};
+        data.summary.forEach(s => {
+            if (!dataMap[s.date]) dataMap[s.date] = {};
+            dataMap[s.date][s.computer_name] = s;
+        });
         let bodyHtml = '';
-        data.dates.forEach(date => {
+        dates.forEach(date => {
             bodyHtml += `<tr><td class="date-cell">${formatDateShort(date)}</td>`;
-            data.computers.forEach(hostname => {
-                const info = data.timeline[date]?.[hostname];
+            computers.forEach(hostname => {
+                const info = dataMap[date]?.[hostname];
                 if (info) {
-                    bodyHtml += `<td class="time-cell">${info.time.substring(0, 5)}</td>`;
+                    const boot = info.first_boot ? info.first_boot.substring(0, 5) : '-';
+                    const shutdown = info.last_shutdown ? info.last_shutdown.substring(0, 5) : '-';
+                    bodyHtml += `<td class="time-cell">${boot} / ${shutdown}</td>`;
                 } else {
                     bodyHtml += '<td class="time-cell empty">-</td>';
                 }
@@ -493,7 +446,6 @@ async function loadTimeline() {
             bodyHtml += '</tr>';
         });
         tbody.innerHTML = bodyHtml;
-
     } catch (error) {
         tbody.innerHTML = '<tr><td colspan="100" class="empty-state">데이터를 불러올 수 없습니다</td></tr>';
     }
@@ -510,8 +462,7 @@ function formatDateShort(dateStr) {
 
 function refreshAll() {
     loadComputers();
-    loadEvents();
-    loadTimeline();
+    loadDailySummary();
 }
 
 // Enter 키로 이름 저장

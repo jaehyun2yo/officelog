@@ -203,6 +203,13 @@ def get_shutdown_timeline(days: int = 7):
     return database.get_shutdown_timeline(days)
 
 
+@app.get("/api/daily-summary")
+def get_daily_summary_api(days: int = 7):
+    """하루 단위 시작/종료 요약"""
+    summary = database.get_daily_summary(days)
+    return {"summary": summary, "days": days}
+
+
 static_path = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
 
