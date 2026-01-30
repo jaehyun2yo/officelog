@@ -560,3 +560,27 @@ def get_all_events_timeline(days: int = 7, limit: int = 100) -> list[dict]:
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+def get_last_event(computer_name: str, event_type: str) -> Optional[dict]:
+    """특정 컴퓨터의 마지막 이벤트 조회
+
+    Args:
+        computer_name: 컴퓨터 이름 (hostname)
+        event_type: 이벤트 타입 ('boot' 또는 'shutdown')
+
+    Returns:
+        마지막 이벤트 정보 (id, computer_name, event_type, timestamp) 또는 None
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, computer_name, event_type, timestamp
+        FROM events
+        WHERE computer_name = ? AND event_type = ?
+        ORDER BY timestamp DESC
+        LIMIT 1
+    """, (computer_name, event_type))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None

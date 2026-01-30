@@ -77,6 +77,21 @@ def get_events(
     return {"events": events, "count": len(events)}
 
 
+@app.get("/api/events/last")
+def get_last_event(computer_name: str, event_type: str):
+    """특정 컴퓨터의 마지막 이벤트 조회
+
+    에이전트가 부팅 시 미전송 종료 이벤트 복구에 사용
+    """
+    if event_type not in ('boot', 'shutdown'):
+        raise HTTPException(status_code=400, detail="event_type must be 'boot' or 'shutdown'")
+
+    event = database.get_last_event(computer_name, event_type)
+    if event:
+        return {"event": event, "found": True}
+    return {"event": None, "found": False}
+
+
 @app.get("/api/computers")
 def get_computers():
     computers = database.get_computers()

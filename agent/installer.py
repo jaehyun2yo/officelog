@@ -160,19 +160,27 @@ def send_event(server_url: str, event_type: str, timestamp: datetime = None) -> 
         "timestamp": timestamp.isoformat()
     }
 
+    log_error(f"이벤트 전송 시작: {event_type}, URL={url}, data={data}")
+
     for attempt in range(MAX_RETRIES):
         try:
             response = requests.post(url, json=data, timeout=5)
+            log_error(f"서버 응답 (시도 {attempt + 1}): status={response.status_code}, body={response.text[:200]}")
             if response.status_code == 200:
-                log_error(f"이벤트 전송 성공: {event_type}")
+                try:
+                    result = response.json()
+                    log_error(f"이벤트 전송 성공: {event_type}, id={result.get('id')}")
+                except ValueError:
+                    log_error(f"이벤트 전송 성공: {event_type} (non-JSON response)")
                 return True
             log_error(f"이벤트 전송 실패 (시도 {attempt + 1}/{MAX_RETRIES}): HTTP {response.status_code}")
         except Exception as e:
-            log_error(f"이벤트 전송 실패 (시도 {attempt + 1}/{MAX_RETRIES}): {e}")
+            log_error(f"이벤트 전송 실패 (시도 {attempt + 1}/{MAX_RETRIES}): {type(e).__name__}: {e}")
 
         if attempt < MAX_RETRIES - 1:
             time.sleep(RETRY_DELAY)
 
+    log_error(f"이벤트 전송 최종 실패: {event_type}")
     return False
 
 
@@ -189,15 +197,31 @@ def send_shutdown_event_sync(server_url: str) -> bool:
         "timestamp": korea_time.isoformat()
     }
 
+    log_error(f"종료 이벤트 전송 시작: URL={url}")
+    log_error(f"종료 이벤트 데이터: {data}")
+
     try:
         response = requests.post(url, json=data, timeout=3)
+        log_error(f"서버 응답: status={response.status_code}, body={response.text[:200]}")
         if response.status_code == 200:
-            log_error("종료 이벤트 전송 성공 (WM_ENDSESSION)")
-            update_state_after_shutdown(korea_time)
-            return True
-        log_error(f"종료 이벤트 전송 실패: HTTP {response.status_code}")
+            # 서버 응답 검증
+            try:
+                result = response.json()
+                if result.get('id') or result.get('status') == 'ok':
+                    log_error(f"종료 이벤트 전송 성공 (WM_ENDSESSION): id={result.get('id')}")
+                    update_state_after_shutdown(korea_time)
+                    return True
+                else:
+                    log_error(f"서버 응답 형식 이상 (상태 업데이트 안함): {result}")
+                    return False
+            except ValueError:
+                # JSON 파싱 실패 시에도 200이면 성공으로 처리
+                log_error("종료 이벤트 전송 성공 (WM_ENDSESSION, non-JSON response)")
+                update_state_after_shutdown(korea_time)
+                return True
+        log_error(f"종료 이벤트 전송 실패: HTTP {response.status_code} - 상태 업데이트 안함 (부팅 시 복구 예정)")
     except Exception as e:
-        log_error(f"종료 이벤트 전송 실패: {e}")
+        log_error(f"종료 이벤트 전송 예외: {type(e).__name__}: {e} - 상태 업데이트 안함 (부팅 시 복구 예정)")
 
     return False
 
@@ -432,28 +456,116 @@ def parse_event_timestamp(time_str: str) -> datetime:
         return None
 
 
-def recover_missed_shutdown_events(server_url: str) -> int:
-    """부팅 시 미전송 종료 이벤트 복구"""
-    state = load_state()
+def check_server_connection(server_url: str) -> bool:
+    """서버 연결 상태 확인"""
+    try:
+        url = f"{server_url.rstrip('/')}/api/health"
+        response = requests.get(url, timeout=5)
+        return response.status_code == 200
+    except Exception as e:
+        log_error(f"서버 연결 확인 실패: {e}")
+        # /api/health가 없을 수 있으므로 기본 URL로 재시도
+        try:
+            response = requests.get(server_url, timeout=5)
+            return response.status_code in (200, 404)  # 서버가 응답하면 OK
+        except Exception:
+            return False
 
-    # 첫 실행 시 복구 건너뛰기 (상태 초기화만)
-    if not state.get('last_sent_shutdown'):
-        log_error("첫 실행 - 상태 초기화")
+
+def get_last_event_from_server(server_url: str, event_type: str) -> datetime:
+    """서버에서 마지막 전송된 이벤트 시간 조회
+
+    Args:
+        server_url: 서버 URL
+        event_type: 이벤트 타입 ('boot' 또는 'shutdown')
+
+    Returns:
+        마지막 이벤트 timestamp (datetime) 또는 None
+    """
+    url = f"{server_url.rstrip('/')}/api/events/last"
+    params = {
+        "computer_name": get_computer_name(),
+        "event_type": event_type
+    }
+
+    try:
+        response = requests.get(url, params=params, timeout=5)
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('found') and result.get('event'):
+                timestamp_str = result['event'].get('timestamp')
+                if timestamp_str:
+                    # ISO 형식 파싱
+                    try:
+                        return datetime.fromisoformat(timestamp_str.replace('Z', '+00:00').replace('+00:00', ''))
+                    except ValueError:
+                        log_error(f"서버 이벤트 timestamp 파싱 실패: {timestamp_str}")
+                        return None
+        log_error(f"서버에서 마지막 {event_type} 이벤트 없음")
+        return None
+    except Exception as e:
+        log_error(f"서버 마지막 이벤트 조회 실패: {e}")
+        return None
+
+
+def recover_missed_shutdown_events(server_url: str) -> int:
+    """부팅 시 미전송 종료 이벤트 복구
+
+    개선된 복구 로직:
+    1. 서버에서 마지막 전송된 shutdown 이벤트 시간 조회
+    2. 로컬 상태 파일과 비교하여 더 최신 시간 사용
+    3. 이벤트 로그에서 그 이후의 종료 이벤트 조회 및 전송
+    """
+    log_error("recover_missed_shutdown_events 시작")
+    state = load_state()
+    log_error(f"현재 로컬 상태: {state}")
+
+    # 서버 연결 확인 (연결 안 되면 복구 건너뛰기)
+    log_error(f"서버 연결 확인: {server_url}")
+    if not check_server_connection(server_url):
+        log_error("서버 연결 실패 - 복구 건너뜀 (다음 부팅 시 재시도)")
+        return 0
+    log_error("서버 연결 확인 완료")
+
+    # 서버에서 마지막 전송된 shutdown 이벤트 시간 조회
+    last_sent_on_server = get_last_event_from_server(server_url, 'shutdown')
+    log_error(f"서버의 마지막 shutdown 시간: {last_sent_on_server}")
+
+    # 로컬 상태에서 마지막 전송 시간 조회
+    last_sent_local = None
+    if state.get('last_sent_shutdown'):
+        try:
+            last_sent_local = datetime.fromisoformat(state['last_sent_shutdown'])
+            log_error(f"로컬의 마지막 shutdown 시간: {last_sent_local}")
+        except ValueError as e:
+            log_error(f"로컬 last_sent_shutdown 파싱 실패: {e}")
+
+    # 둘 중 더 최신 시간 사용 (더 안전한 기준)
+    if last_sent_on_server and last_sent_local:
+        last_sent = max(last_sent_on_server, last_sent_local)
+        log_error(f"비교 기준 시간 (둘 중 최신): {last_sent}")
+    elif last_sent_on_server:
+        last_sent = last_sent_on_server
+        log_error(f"서버 시간 사용: {last_sent}")
+    elif last_sent_local:
+        last_sent = last_sent_local
+        log_error(f"로컬 시간 사용: {last_sent}")
+    else:
+        # 둘 다 없으면 첫 실행 - 상태 초기화만
+        log_error("첫 실행 - 서버/로컬 모두 기록 없음, 상태 초기화")
         events = get_shutdown_events_from_log(max_events=1)
         if events:
             state['last_sent_shutdown'] = events[0]['timestamp'].isoformat()
             state['last_sent_event_record_id'] = events[0]['record_id']
             save_state(state)
+            log_error(f"상태 초기화 완료: {state}")
         return 0
 
-    # 이전 종료 이벤트 조회
-    try:
-        last_sent = datetime.fromisoformat(state['last_sent_shutdown'])
-    except (ValueError, KeyError):
-        log_error("last_sent_shutdown 파싱 실패")
-        return 0
-
+    # 이벤트 로그에서 last_sent 이후의 종료 이벤트 조회
     events = get_shutdown_events_from_log(since_timestamp=last_sent, max_events=5)
+    log_error(f"이벤트 로그에서 조회된 종료 이벤트: {len(events)}개")
+    for i, event in enumerate(events):
+        log_error(f"  [{i}] {event}")
 
     if not events:
         log_error("복구할 종료 이벤트 없음")
@@ -462,22 +574,29 @@ def recover_missed_shutdown_events(server_url: str) -> int:
     # 미전송 이벤트 필터링 및 전송
     sent_count = 0
     last_record_id = state.get('last_sent_event_record_id', 0)
+    log_error(f"마지막 전송 record_id: {last_record_id}")
 
     for event in events:
-        # 이미 전송된 이벤트 건너뛰기
+        # record_id로도 중복 체크 (더 안전)
         if event['record_id'] <= last_record_id:
+            log_error(f"건너뜀 (record_id 중복): record_id={event['record_id']}")
             continue
 
-        log_error(f"미전송 종료 이벤트 복구: {event['shutdown_type']} at {event['timestamp']}")
+        log_error(f"미전송 종료 이벤트 복구 시도: {event['shutdown_type']} at {event['timestamp']} (record_id={event['record_id']})")
 
-        # 지연 전송 (복구된 이벤트임을 표시)
+        # 서버로 전송
         if send_event(server_url, 'shutdown', event['timestamp']):
             sent_count += 1
             # 상태 업데이트
             update_state_after_shutdown(event['timestamp'], event['record_id'])
+            log_error(f"복구 전송 성공: record_id={event['record_id']}")
+        else:
+            log_error(f"복구 전송 실패: record_id={event['record_id']}")
 
     if sent_count > 0:
         log_error(f"이전 종료 이벤트 {sent_count}개 복구 완료")
+    else:
+        log_error("복구된 이벤트 없음")
 
     return sent_count
 
@@ -497,16 +616,24 @@ class ShutdownMonitor:
         self._wnd_proc_callback = None
         self._class_atom = None
 
+        # 종료 시 가장 마지막에 처리되도록 설정 (우선순위 낮춤)
+        # 0x100 = 낮은 우선순위 (다른 앱보다 늦게 종료 메시지 수신)
+        try:
+            result = ctypes.windll.kernel32.SetProcessShutdownParameters(0x100, 0)
+            log_error(f"SetProcessShutdownParameters 호출: result={result}")
+        except Exception as e:
+            log_error(f"SetProcessShutdownParameters 실패: {e}")
+
     def _wnd_proc(self, hwnd, msg, wparam, lparam):
         """윈도우 프로시저"""
         if msg == WM_QUERYENDSESSION:
-            log_error("WM_QUERYENDSESSION 수신")
+            log_error("WM_QUERYENDSESSION 수신 - 종료 요청 감지!")
             if not self.shutdown_sent:
                 self._send_shutdown()
             return 1  # 종료 허용
 
         elif msg == WM_ENDSESSION:
-            log_error(f"WM_ENDSESSION 수신 (wparam={wparam})")
+            log_error(f"WM_ENDSESSION 수신 (wparam={wparam}) - 실제 종료 진행!")
             if wparam and not self.shutdown_sent:
                 self._send_shutdown()
             return 0
@@ -522,10 +649,33 @@ class ShutdownMonitor:
         return ctypes.windll.user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
     def _send_shutdown(self):
-        """종료 이벤트 전송"""
+        """종료 이벤트 전송 (종료 지연 API 사용)"""
+        # 종료 지연 요청 (Windows에게 "작업 중" 알림)
+        if self.hwnd:
+            try:
+                reason = "ComputerOff: 종료 이벤트 전송 중..."
+                result = ctypes.windll.user32.ShutdownBlockReasonCreate(
+                    self.hwnd,
+                    ctypes.c_wchar_p(reason)
+                )
+                log_error(f"ShutdownBlockReasonCreate 호출: result={result}")
+            except Exception as e:
+                log_error(f"ShutdownBlockReasonCreate 실패: {e}")
+
         self.shutdown_sent = True
         log_error("종료 이벤트 전송 시작 (WM_ENDSESSION)")
-        send_shutdown_event_sync(self.server_url)
+
+        # 종료 이벤트 전송
+        result = send_shutdown_event_sync(self.server_url)
+        log_error(f"종료 이벤트 전송 결과: {result}")
+
+        # 종료 지연 해제
+        if self.hwnd:
+            try:
+                result = ctypes.windll.user32.ShutdownBlockReasonDestroy(self.hwnd)
+                log_error(f"ShutdownBlockReasonDestroy 호출: result={result}")
+            except Exception as e:
+                log_error(f"ShutdownBlockReasonDestroy 실패: {e}")
 
     def create_window(self) -> bool:
         """숨겨진 윈도우 생성"""
@@ -984,7 +1134,7 @@ class InstallerGUI:
         if config.get('server_url'):
             self.url_entry.insert(0, config['server_url'])
         else:
-            self.url_entry.insert(0, "http://")
+            self.url_entry.insert(0, "http://34.64.116.152:8000")
 
         hint_label = tk.Label(
             main_frame,
