@@ -564,8 +564,55 @@ async function loadAllTimeline() {
     }
 }
 
+async function loadTodaySummary() {
+    const tbody = document.getElementById('today-summary-body');
+    const dateSpan = document.getElementById('today-date');
+
+    // 오늘 날짜 표시
+    const today = new Date();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+    const dayName = dayNames[today.getDay()];
+    dateSpan.textContent = `(${month}/${day} ${dayName})`;
+
+    try {
+        const data = await fetchJSON('/api/daily-summary?days=1');
+
+        // 오늘 날짜 문자열 (YYYY-MM-DD)
+        const todayStr = today.toISOString().split('T')[0];
+
+        // 오늘 데이터만 필터링
+        const todayData = data.summary.filter(s => s.date === todayStr);
+
+        if (todayData.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="3" class="empty-state">오늘 기록된 이벤트가 없습니다</td></tr>';
+            return;
+        }
+
+        let html = '';
+        todayData.forEach(item => {
+            const displayName = displayNameMap[item.computer_name] || item.computer_name;
+            const firstBoot = item.first_boot ? item.first_boot.substring(0, 5) : '-';
+            const lastShutdown = item.last_shutdown ? item.last_shutdown.substring(0, 5) : '-';
+            html += `
+                <tr>
+                    <td class="computer-cell">${displayName}</td>
+                    <td class="time-cell boot">${firstBoot}</td>
+                    <td class="time-cell shutdown">${lastShutdown}</td>
+                </tr>
+            `;
+        });
+        tbody.innerHTML = html;
+
+    } catch (error) {
+        tbody.innerHTML = '<tr><td colspan="3" class="empty-state">데이터를 불러올 수 없습니다</td></tr>';
+    }
+}
+
 function refreshAll() {
     loadComputers();
+    loadTodaySummary();
     loadDailySummary();
     loadAllTimeline();
 }
