@@ -3,6 +3,7 @@ let currentComputer = null;
 let renameTarget = null;
 let deleteTarget = null;
 let isSettingPassword = false;
+let displayNameMap = {};  // hostname -> display_name 매핑
 
 async function fetchJSON(url) {
     const response = await fetch(url);
@@ -197,6 +198,14 @@ async function loadComputers() {
             return;
         }
 
+        // display_name 매핑 업데이트
+        displayNameMap = {};
+        data.computers.forEach(pc => {
+            if (pc.display_name) {
+                displayNameMap[pc.computer_name] = pc.display_name;
+            }
+        });
+
         container.innerHTML = data.computers.map(pc => {
             const displayName = pc.display_name || pc.computer_name;
             const showHostname = pc.display_name ? `<span class="hostname-badge">${pc.computer_name}</span>` : '';
@@ -245,18 +254,20 @@ async function loadEvents() {
             return;
         }
 
-        container.innerHTML = data.events.map(event => `
+        container.innerHTML = data.events.map(event => {
+            const displayName = displayNameMap[event.computer_name] || event.computer_name;
+            return `
             <div class="event-item ${event.event_type}">
                 <div class="event-icon">
                     ${event.event_type === 'boot' ? '▲' : '▼'}
                 </div>
                 <div class="event-details">
-                    <div class="event-computer">${event.computer_name}</div>
+                    <div class="event-computer">${displayName}</div>
                     <div class="event-time">${formatDateTime(event.timestamp)}</div>
                 </div>
                 <span class="event-type">${event.event_type === 'boot' ? '부팅' : '종료'}</span>
             </div>
-        `).join('');
+        `}).join('');
 
         document.getElementById('total-events').textContent = data.count;
 

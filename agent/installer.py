@@ -8,9 +8,14 @@ ComputerOff Agent 설치 프로그램
 import ctypes
 import json
 import os
+import socket
 import subprocess
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
+
+import requests
 
 # tkinter는 선택적 import (32비트 embeddable에서는 없을 수 있음)
 tk = None
@@ -22,6 +27,75 @@ try:
 except ImportError:
     HAS_GUI = False
 
+
+# ==================== Agent 기능 (통합) ====================
+
+MAX_RETRIES = 3
+RETRY_DELAY = 2
+
+
+def get_computer_name() -> str:
+    return socket.gethostname()
+
+
+def log_error(message: str):
+    """에러 로그 기록"""
+    log_path = get_install_dir() / "agent.log"
+    timestamp = datetime.now().isoformat()
+    try:
+        with open(log_path, 'a', encoding='utf-8') as f:
+            f.write(f"[{timestamp}] {message}\n")
+    except:
+        pass
+
+
+def send_event(server_url: str, event_type: str) -> bool:
+    """이벤트를 서버로 전송 (재시도 포함)"""
+    url = f"{server_url.rstrip('/')}/api/events"
+    data = {
+        "computer_name": get_computer_name(),
+        "event_type": event_type,
+        "timestamp": datetime.now().isoformat()
+    }
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = requests.post(url, json=data, timeout=15)
+            if response.status_code == 200:
+                log_error(f"이벤트 전송 성공: {event_type}")
+                return True
+            log_error(f"이벤트 전송 실패 (시도 {attempt + 1}/{MAX_RETRIES}): HTTP {response.status_code}")
+        except Exception as e:
+            log_error(f"이벤트 전송 실패 (시도 {attempt + 1}/{MAX_RETRIES}): {e}")
+
+        if attempt < MAX_RETRIES - 1:
+            time.sleep(RETRY_DELAY)
+
+    return False
+
+
+def send_heartbeat(server_url: str) -> bool:
+    """하트비트를 서버로 전송 (실시간 온라인 상태용)"""
+    url = f"{server_url.rstrip('/')}/api/heartbeat"
+    params = {
+        "computer_name": get_computer_name()
+    }
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = requests.post(url, params=params, timeout=10)
+            if response.status_code == 200:
+                return True
+        except:
+            pass
+
+        if attempt < MAX_RETRIES - 1:
+            time.sleep(1)
+
+    return False
+
+
+# ==================== 설치 관련 기능 ====================
 
 def is_admin() -> bool:
     """관리자 권한 확인"""
@@ -201,7 +275,7 @@ def install_agent(server_url: str) -> tuple:
     shutdown_result = register_task("ComputerOff-Shutdown", "shutdown")
     results.append(("종료 작업 등록", shutdown_result))
 
-    # 실시간 상태 확인용 하트비트 (30초마다)
+    # 실시간 상태 확인용 하트비트 (1분마다)
     heartbeat_result = register_task("ComputerOff-Heartbeat", "heartbeat")
     results.append(("실시간 상태 확인 등록", heartbeat_result))
 
@@ -392,8 +466,6 @@ class InstallerGUI:
 
 def run_agent(event_type: str):
     """Agent 실행 (이벤트/하트비트 전송)"""
-    from agent import send_event, send_heartbeat, load_config, log_error
-
     config = load_config()
     server_url = config.get('server_url')
 
