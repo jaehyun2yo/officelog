@@ -161,7 +161,7 @@ def get_computers() -> list[dict]:
         # 하트비트 기반 온라인 상태 (60초 이내 하트비트 있으면 온라인)
         if last_seen:
             cursor.execute("""
-                SELECT (julianday('now') - julianday(?)) * 86400 as seconds_ago
+                SELECT (julianday('now', '+9 hours') - julianday(?)) * 86400 as seconds_ago
             """, (last_seen,))
             result_check = cursor.fetchone()
             seconds_ago = result_check['seconds_ago'] if result_check else 9999
@@ -193,7 +193,7 @@ def update_heartbeat(computer_name: str, ip_address: Optional[str] = None):
 
     cursor.execute("""
         INSERT OR REPLACE INTO heartbeats (computer_name, last_seen, ip_address)
-        VALUES (?, datetime('now'), ?)
+        VALUES (?, datetime('now', '+9 hours'), ?)
     """, (computer_name, ip_address))
 
     conn.commit()
@@ -217,13 +217,13 @@ def register_computer(computer_name: str, ip_address: Optional[str] = None):
     # computers 테이블에 등록
     cursor.execute("""
         INSERT OR IGNORE INTO computers (hostname, created_at, updated_at)
-        VALUES (?, datetime('now'), datetime('now'))
+        VALUES (?, datetime('now', '+9 hours'), datetime('now', '+9 hours'))
     """, (computer_name,))
 
     # heartbeats 테이블에 초기 등록 (IP 포함)
     cursor.execute("""
         INSERT OR REPLACE INTO heartbeats (computer_name, last_seen, ip_address)
-        VALUES (?, datetime('now'), ?)
+        VALUES (?, datetime('now', '+9 hours'), ?)
     """, (computer_name, ip_address))
 
     # 초기 install 이벤트 삽입 (PC 목록 표시용)
@@ -231,7 +231,7 @@ def register_computer(computer_name: str, ip_address: Optional[str] = None):
     if existing_count == 0:
         cursor.execute("""
             INSERT INTO events (computer_name, event_type, timestamp)
-            VALUES (?, 'install', datetime('now'))
+            VALUES (?, 'install', datetime('now', '+9 hours'))
         """, (computer_name,))
 
     conn.commit()
@@ -246,7 +246,7 @@ def get_computer_history(computer_name: str, days: int = 30) -> list[dict]:
     cursor.execute("""
         SELECT * FROM events
         WHERE computer_name = ?
-        AND timestamp >= datetime('now', ?)
+        AND timestamp >= datetime('now', '+9 hours', ?)
         ORDER BY timestamp DESC
     """, (computer_name, f'-{days} days'))
 
@@ -267,7 +267,7 @@ def get_daily_stats(computer_name: Optional[str] = None, days: int = 7) -> list[
             SUM(CASE WHEN event_type = 'boot' THEN 1 ELSE 0 END) as boot_count,
             SUM(CASE WHEN event_type = 'shutdown' THEN 1 ELSE 0 END) as shutdown_count
         FROM events
-        WHERE timestamp >= DATE('now', ?)
+        WHERE timestamp >= DATE('now', '+9 hours', ?)
     """
     params = [f'-{days} days']
 
@@ -302,7 +302,7 @@ def set_setting(key: str, value: str):
     cursor = conn.cursor()
     cursor.execute("""
         INSERT OR REPLACE INTO settings (key, value, updated_at)
-        VALUES (?, ?, datetime('now'))
+        VALUES (?, ?, datetime('now', '+9 hours'))
     """, (key, value))
     conn.commit()
     conn.close()
@@ -335,7 +335,7 @@ def create_session() -> str:
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO sessions (session_id, expires_at)
-        VALUES (?, datetime('now', '+24 hours'))
+        VALUES (?, datetime('now', '+9 hours', '+24 hours'))
     """, (session_id,))
     conn.commit()
     conn.close()
@@ -350,7 +350,7 @@ def validate_session(session_id: str) -> bool:
     cursor = conn.cursor()
     cursor.execute("""
         SELECT 1 FROM sessions
-        WHERE session_id = ? AND expires_at > datetime('now')
+        WHERE session_id = ? AND expires_at > datetime('now', '+9 hours')
     """, (session_id,))
     row = cursor.fetchone()
     conn.close()
@@ -370,7 +370,7 @@ def cleanup_expired_sessions():
     """만료된 세션 정리"""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM sessions WHERE expires_at <= datetime('now')")
+    cursor.execute("DELETE FROM sessions WHERE expires_at <= datetime('now', '+9 hours')")
     conn.commit()
     conn.close()
 
@@ -393,7 +393,7 @@ def set_computer_display_name(hostname: str, display_name: str):
     cursor = conn.cursor()
     cursor.execute("""
         INSERT OR REPLACE INTO computers (hostname, display_name, updated_at)
-        VALUES (?, ?, datetime('now'))
+        VALUES (?, ?, datetime('now', '+9 hours'))
     """, (hostname, display_name))
     conn.commit()
     conn.close()
@@ -440,7 +440,7 @@ def get_shutdown_timeline(days: int = 7) -> dict:
     cursor.execute("""
         SELECT DISTINCT DATE(timestamp) as date
         FROM events
-        WHERE timestamp >= DATE('now', ?)
+        WHERE timestamp >= DATE('now', '+9 hours', ?)
         ORDER BY date DESC
     """, (f'-{days} days',))
     dates = [row['date'] for row in cursor.fetchall()]
@@ -449,7 +449,7 @@ def get_shutdown_timeline(days: int = 7) -> dict:
     cursor.execute("""
         SELECT DISTINCT computer_name
         FROM events
-        WHERE timestamp >= DATE('now', ?)
+        WHERE timestamp >= DATE('now', '+9 hours', ?)
         ORDER BY computer_name
     """, (f'-{days} days',))
     computers = [row['computer_name'] for row in cursor.fetchall()]

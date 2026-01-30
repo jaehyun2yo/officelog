@@ -134,9 +134,18 @@ async function logout() {
     }
 }
 
+function parseKoreanTime(isoString) {
+    // timezone 정보가 없으면 한국 시간(+09:00)으로 가정
+    if (!isoString) return null;
+    if (!isoString.includes('+') && !isoString.includes('Z')) {
+        isoString = isoString + '+09:00';
+    }
+    return new Date(isoString);
+}
+
 function formatDateTime(isoString) {
     if (!isoString) return '-';
-    const date = new Date(isoString);
+    const date = parseKoreanTime(isoString);
     return date.toLocaleString('ko-KR', {
         year: 'numeric',
         month: '2-digit',
@@ -149,7 +158,7 @@ function formatDateTime(isoString) {
 
 function formatDate(isoString) {
     if (!isoString) return '-';
-    const date = new Date(isoString);
+    const date = parseKoreanTime(isoString);
     return date.toLocaleString('ko-KR', {
         year: 'numeric',
         month: '2-digit',
@@ -159,7 +168,7 @@ function formatDate(isoString) {
 
 function formatTime(isoString) {
     if (!isoString) return '-';
-    const date = new Date(isoString);
+    const date = parseKoreanTime(isoString);
     return date.toLocaleString('ko-KR', {
         hour: '2-digit',
         minute: '2-digit',
@@ -169,7 +178,7 @@ function formatTime(isoString) {
 
 function formatTimeAgo(isoString) {
     if (!isoString) return '-';
-    const date = new Date(isoString);
+    const date = parseKoreanTime(isoString);
     const now = new Date();
     const diffMs = now - date;
     const diffMins = Math.floor(diffMs / 60000);
@@ -266,7 +275,7 @@ async function loadEvents() {
                     <div class="event-computer">${displayName}</div>
                     <div class="event-time">${formatDateTime(event.timestamp)}</div>
                 </div>
-                <span class="event-type">${event.event_type === 'boot' ? '부팅' : '종료'}</span>
+                <span class="event-type">${event.event_type === 'boot' ? '컴퓨터 시작' : '컴퓨터 종료'}</span>
             </div>
         `}).join('');
 
@@ -333,7 +342,7 @@ async function loadHistory() {
                     <div class="history-event ${event.event_type}">
                         <span class="history-time">${formatTime(event.timestamp)}</span>
                         <span class="history-type ${event.event_type}">
-                            ${event.event_type === 'boot' ? '▲ 부팅' : '▼ 종료'}
+                            ${event.event_type === 'boot' ? '▲ 컴퓨터 시작' : '▼ 컴퓨터 종료'}
                         </span>
                     </div>
                 `;
