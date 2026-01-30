@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+
+# PyInstaller
+*.manifest
+*.spec
+build/
+dist/
+
+# Database
+*.db
+*.sqlite3
+
+# Logs
+*.log
+
+# Config (contains server URL)
+config.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

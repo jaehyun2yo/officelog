@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ComputerOff - 컴퓨터 온오프 모니터링</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>ComputerOff</h1>
+            <p>컴퓨터 온오프 시간 모니터링 대시보드</p>
+            <div class="header-right">
+                <span class="live-indicator">● LIVE</span>
+                <button class="refresh-btn" onclick="refreshAll()">새로고침</button>
+            </div>
+        </header>
+
+        <div class="grid">
+            <div class="card">
+                <h2>통계</h2>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <div class="stat-value" id="total-computers">0</div>
+                        <div class="stat-label">등록된 PC</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="online-count">0</div>
+                        <div class="stat-label">온라인</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value" id="total-events">0</div>
+                        <div class="stat-label">총 이벤트</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>컴퓨터 목록 <span class="subtitle">(클릭하여 이력 조회)</span></h2>
+                <div id="computers-list">
+                    <div class="empty-state">
+                        <p>로딩 중...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>최근 이벤트</h2>
+            <div class="event-list" id="events-list">
+                <div class="empty-state">
+                    <p>로딩 중...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 이력 조회 모달 -->
+    <div id="history-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modal-title">컴퓨터 이력</h2>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="date-filter">
+                    <label>조회 기간:</label>
+                    <select id="days-filter" onchange="loadHistory()">
+                        <option value="7">최근 7일</option>
+                        <option value="14">최근 14일</option>
+                        <option value="30" selected>최근 30일</option>
+                        <option value="90">최근 90일</option>
+                    </select>
+                </div>
+                <div id="history-list" class="history-list">
+                    <div class="empty-state"><p>로딩 중...</p></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
