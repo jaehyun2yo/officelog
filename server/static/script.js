@@ -577,24 +577,33 @@ async function loadTodaySummary() {
     dateSpan.textContent = `(${month}/${day} ${dayName})`;
 
     try {
-        const data = await fetchJSON('/api/daily-summary?days=1');
+        // 1. 모든 등록된 컴퓨터 목록 조회
+        const computersData = await fetchJSON('/api/computers');
+        const allComputers = computersData.computers;
 
-        // 오늘 날짜 문자열 (YYYY-MM-DD)
-        const todayStr = today.toISOString().split('T')[0];
-
-        // 오늘 데이터만 필터링
-        const todayData = data.summary.filter(s => s.date === todayStr);
-
-        if (todayData.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="3" class="empty-state">오늘 기록된 이벤트가 없습니다</td></tr>';
+        if (allComputers.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="3" class="empty-state">등록된 컴퓨터가 없습니다</td></tr>';
             return;
         }
 
+        // 2. 오늘의 이벤트 조회
+        const summaryData = await fetchJSON('/api/daily-summary?days=1');
+        const todayStr = today.toISOString().split('T')[0];
+        const todayEvents = summaryData.summary.filter(s => s.date === todayStr);
+
+        // 3. 이벤트를 컴퓨터별 맵으로 변환
+        const eventMap = {};
+        todayEvents.forEach(e => {
+            eventMap[e.computer_name] = e;
+        });
+
+        // 4. 모든 컴퓨터 표시 (이벤트 없으면 "-")
         let html = '';
-        todayData.forEach(item => {
-            const displayName = displayNameMap[item.computer_name] || item.computer_name;
-            const firstBoot = item.first_boot ? item.first_boot.substring(0, 5) : '-';
-            const lastShutdown = item.last_shutdown ? item.last_shutdown.substring(0, 5) : '-';
+        allComputers.forEach(pc => {
+            const displayName = pc.display_name || pc.computer_name;
+            const event = eventMap[pc.computer_name];
+            const firstBoot = event?.first_boot ? event.first_boot.substring(0, 5) : '-';
+            const lastShutdown = event?.last_shutdown ? event.last_shutdown.substring(0, 5) : '-';
             html += `
                 <tr>
                     <td class="computer-cell">${displayName}</td>
