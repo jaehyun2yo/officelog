@@ -209,11 +209,12 @@ async function loadComputers() {
         container.innerHTML = data.computers.map(pc => {
             const displayName = pc.display_name || pc.computer_name;
             const showHostname = pc.display_name ? `<span class="hostname-badge">${pc.computer_name}</span>` : '';
+            const ipBadge = pc.ip_address ? `<span class="ip-badge">${pc.ip_address}</span>` : '';
             return `
             <div class="computer-item">
                 <div class="computer-main clickable" onclick="openHistory('${pc.computer_name}')">
                     <div>
-                        <div class="computer-name">${displayName} ${showHostname}</div>
+                        <div class="computer-name">${displayName} ${showHostname} ${ipBadge}</div>
                         <div class="computer-info">
                             ${pc.status === 'online' ? '마지막 확인: 방금 전' : '마지막 활동: ' + formatTimeAgo(pc.last_boot || pc.last_shutdown)}
                         </div>

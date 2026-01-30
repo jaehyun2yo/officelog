@@ -96,6 +96,13 @@ def heartbeat(computer_name: str, ip_address: Optional[str] = None):
     return {"status": "ok"}
 
 
+@app.post("/api/computers/register")
+def register_computer(computer_name: str, ip_address: Optional[str] = None):
+    """PC 등록 (설치 시 호출 - 즉시 관리자 페이지에 표시)"""
+    database.register_computer(computer_name, ip_address)
+    return {"status": "ok"}
+
+
 @app.get("/api/computers/{computer_name}/history")
 def get_computer_history(computer_name: str, days: int = 30):
     """특정 컴퓨터의 이벤트 이력 조회"""

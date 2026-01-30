@@ -38,6 +38,21 @@ def get_computer_name() -> str:
     return socket.gethostname()
 
 
+def get_local_ip() -> str:
+    """로컬 IP 주소 반환
+
+    8.8.8.8에 UDP 소켓 연결을 통해 로컬 IP 획득 (실제 패킷 전송 없음)
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return None
+
+
 def log_error(message: str):
     """에러 로그 기록"""
     log_path = get_install_dir() / "agent.log"
@@ -78,7 +93,8 @@ def send_heartbeat(server_url: str) -> bool:
     """하트비트를 서버로 전송 (실시간 온라인 상태용)"""
     url = f"{server_url.rstrip('/')}/api/heartbeat"
     params = {
-        "computer_name": get_computer_name()
+        "computer_name": get_computer_name(),
+        "ip_address": get_local_ip()
     }
 
     for attempt in range(MAX_RETRIES):
@@ -262,12 +278,35 @@ def unregister_task(task_name: str) -> bool:
         return False
 
 
+def register_to_server(server_url: str) -> bool:
+    """서버에 PC 등록 (설치 시 호출)"""
+    url = f"{server_url.rstrip('/')}/api/computers/register"
+    params = {
+        "computer_name": get_computer_name(),
+        "ip_address": get_local_ip()
+    }
+    try:
+        response = requests.post(url, params=params, timeout=10)
+        if response.status_code == 200:
+            log_error("서버 등록 성공")
+            return True
+        log_error(f"서버 등록 실패: HTTP {response.status_code}")
+        return False
+    except Exception as e:
+        log_error(f"서버 등록 실패: {e}")
+        return False
+
+
 def install_agent(server_url: str) -> tuple:
     """Agent 설치"""
     results = []
 
     save_config(server_url)
     results.append(("설정 저장", True))
+
+    # 서버에 PC 등록 (즉시 관리자 페이지에 표시)
+    register_result = register_to_server(server_url)
+    results.append(("서버 등록", register_result))
 
     boot_result = register_task("ComputerOff-Boot", "boot")
     results.append(("부팅 작업 등록", boot_result))
@@ -283,9 +322,11 @@ def install_agent(server_url: str) -> tuple:
 
 
 def uninstall_agent() -> tuple:
-    """Agent 제거"""
+    """Agent 완전 제거 (모든 설정 파일 삭제)"""
     results = []
+    install_dir = get_install_dir()
 
+    # Task Scheduler 작업 제거
     boot_result = unregister_task("ComputerOff-Boot")
     results.append(("부팅 작업 제거", boot_result))
 
@@ -295,10 +336,28 @@ def uninstall_agent() -> tuple:
     heartbeat_result = unregister_task("ComputerOff-Heartbeat")
     results.append(("실시간 상태 확인 제거", heartbeat_result))
 
-    config_path = get_install_dir() / "config.json"
+    # 설정 파일 제거
+    config_path = install_dir / "config.json"
     if config_path.exists():
         config_path.unlink()
         results.append(("설정 파일 제거", True))
+
+    # 로그 파일 제거
+    log_path = install_dir / "agent.log"
+    if log_path.exists():
+        try:
+            log_path.unlink()
+            results.append(("로그 파일 제거", True))
+        except Exception:
+            results.append(("로그 파일 제거", False))
+
+    # 임시 XML 파일들 제거
+    for xml_file in install_dir.glob("ComputerOff-*.xml"):
+        try:
+            xml_file.unlink()
+            results.append((f"{xml_file.name} 제거", True))
+        except Exception:
+            results.append((f"{xml_file.name} 제거", False))
 
     return results
 

@@ -200,6 +200,44 @@ def update_heartbeat(computer_name: str, ip_address: Optional[str] = None):
     conn.close()
 
 
+def register_computer(computer_name: str, ip_address: Optional[str] = None):
+    """PC 등록 - 설치 시 호출 (즉시 관리자 페이지에 표시)
+
+    이미 등록된 PC 재설치 시 install 이벤트 중복 삽입 방지
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # 기존 PC 확인 (중복 등록 방지)
+    cursor.execute("""
+        SELECT COUNT(*) as cnt FROM events WHERE computer_name = ?
+    """, (computer_name,))
+    existing_count = cursor.fetchone()['cnt']
+
+    # computers 테이블에 등록
+    cursor.execute("""
+        INSERT OR IGNORE INTO computers (hostname, created_at, updated_at)
+        VALUES (?, datetime('now'), datetime('now'))
+    """, (computer_name,))
+
+    # heartbeats 테이블에 초기 등록 (IP 포함)
+    cursor.execute("""
+        INSERT OR REPLACE INTO heartbeats (computer_name, last_seen, ip_address)
+        VALUES (?, datetime('now'), ?)
+    """, (computer_name, ip_address))
+
+    # 초기 install 이벤트 삽입 (PC 목록 표시용)
+    # 단, 이미 등록된 PC는 중복 삽입 안 함
+    if existing_count == 0:
+        cursor.execute("""
+            INSERT INTO events (computer_name, event_type, timestamp)
+            VALUES (?, 'install', datetime('now'))
+        """, (computer_name,))
+
+    conn.commit()
+    conn.close()
+
+
 def get_computer_history(computer_name: str, days: int = 30) -> list[dict]:
     """특정 컴퓨터의 이벤트 이력 조회"""
     conn = get_connection()
