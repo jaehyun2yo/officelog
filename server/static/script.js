@@ -135,10 +135,12 @@ async function logout() {
 }
 
 function parseKoreanTime(isoString) {
-    // timezone 정보가 없으면 한국 시간(+09:00)으로 가정
+    // timezone 정보가 없으면 UTC로 저장된 것으로 가정하고 한국 시간(+9시간)으로 변환
     if (!isoString) return null;
     if (!isoString.includes('+') && !isoString.includes('Z')) {
-        isoString = isoString + '+09:00';
+        // UTC로 파싱 후 9시간 추가 (한국 시간 = UTC + 9)
+        const utcDate = new Date(isoString + 'Z');
+        return new Date(utcDate.getTime() + 9 * 60 * 60 * 1000);
     }
     return new Date(isoString);
 }
