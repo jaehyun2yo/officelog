@@ -94,6 +94,11 @@ def get_last_event(computer_name: str, event_type: str):
 
 @app.get("/api/computers")
 def get_computers():
+    # 먼저 오프라인 전환된 컴퓨터들의 종료 이벤트 복구
+    recovered = database.check_and_recover_offline_shutdowns()
+    if recovered:
+        print(f"[Recovery] 종료 이벤트 {len(recovered)}개 복구됨: {[r['computer_name'] for r in recovered]}")
+
     computers = database.get_computers()
     return {"computers": computers, "count": len(computers)}
 

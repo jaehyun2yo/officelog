@@ -464,7 +464,7 @@ def get_shutdown_timeline(days: int = 7) -> dict:
             COUNT(*) as event_count
         FROM events
         WHERE event_type = 'shutdown'
-        AND timestamp >= DATE('now', ?)
+        AND timestamp >= DATE('now', '+9 hours', ?)
         GROUP BY DATE(timestamp), computer_name
     """, (f'-{days} days',))
 
@@ -584,3 +584,86 @@ def get_last_event(computer_name: str, event_type: str) -> Optional[dict]:
     row = cursor.fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+# ==================== 종료 이벤트 복구 함수 ====================
+
+def get_computers_needing_shutdown_recovery() -> list[dict]:
+    """종료 이벤트 복구가 필요한 컴퓨터 목록 조회
+
+    조건:
+    1. 하트비트가 60초 이상 지남 (오프라인)
+    2. 마지막 boot 이후 shutdown 이벤트가 없음
+    3. last_seen이 last_boot 이후여야 함 (안전장치)
+
+    Returns:
+        복구 대상 컴퓨터 목록 [{computer_name, last_boot, last_seen}, ...]
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT
+            h.computer_name,
+            h.last_seen,
+            MAX(CASE WHEN e.event_type = 'boot' THEN e.timestamp END) as last_boot,
+            MAX(CASE WHEN e.event_type = 'shutdown' THEN e.timestamp END) as last_shutdown
+        FROM heartbeats h
+        JOIN events e ON h.computer_name = e.computer_name
+        GROUP BY h.computer_name, h.last_seen
+        HAVING
+            -- 조건 1: 오프라인 (60초 이상 하트비트 없음)
+            (julianday('now', '+9 hours') - julianday(h.last_seen)) * 86400 >= 60
+            -- 조건 2: last_boot이 존재
+            AND last_boot IS NOT NULL
+            -- 조건 3: shutdown이 없거나 last_boot > last_shutdown
+            AND (last_shutdown IS NULL OR last_boot > last_shutdown)
+            -- 조건 4: last_seen >= last_boot (하트비트가 부팅 이후에 발생)
+            AND h.last_seen >= last_boot
+    """)
+
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+
+def check_and_recover_offline_shutdowns() -> list[dict]:
+    """오프라인 전환된 컴퓨터들의 종료 이벤트 자동 복구
+
+    메인 로직:
+    1. get_computers_needing_shutdown_recovery() 호출
+    2. 각 컴퓨터에 대해 shutdown 이벤트 생성 (last_seen 시간 사용)
+    3. 복구 결과 반환
+
+    Returns:
+        복구된 이벤트 목록 [{computer_name, shutdown_time}, ...]
+    """
+    computers = get_computers_needing_shutdown_recovery()
+
+    if not computers:
+        return []
+
+    recovered = []
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    for comp in computers:
+        computer_name = comp['computer_name']
+        last_seen = comp['last_seen']
+
+        # shutdown 이벤트 삽입
+        cursor.execute("""
+            INSERT INTO events (computer_name, event_type, timestamp)
+            VALUES (?, 'shutdown', ?)
+        """, (computer_name, last_seen))
+
+        recovered.append({
+            'computer_name': computer_name,
+            'shutdown_time': last_seen
+        })
+
+    conn.commit()
+    conn.close()
+
+    return recovered
