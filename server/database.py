@@ -617,9 +617,10 @@ def get_computers_needing_shutdown_recovery() -> list[dict]:
             -- 조건 2: last_boot이 존재
             AND last_boot IS NOT NULL
             -- 조건 3: shutdown이 없거나 last_boot > last_shutdown
-            AND (last_shutdown IS NULL OR last_boot > last_shutdown)
+            AND (last_shutdown IS NULL OR datetime(last_boot) > datetime(last_shutdown))
             -- 조건 4: last_seen >= last_boot (하트비트가 부팅 이후에 발생)
-            AND h.last_seen >= last_boot
+            -- datetime() 함수로 정규화하여 ISO 8601(T 구분)과 SQLite(공백 구분) 형식 비교 문제 해결
+            AND datetime(h.last_seen) >= datetime(last_boot)
     """)
 
     rows = cursor.fetchall()
