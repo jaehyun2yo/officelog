@@ -70,15 +70,7 @@ if sys.platform == 'win32':
             ("pt_y", ctypes.c_long),
         ]
 
-# tkinter는 선택적 import (32비트 embeddable에서는 없을 수 있음)
-tk = None
-messagebox = None
-try:
-    import tkinter as tk
-    from tkinter import messagebox
-    HAS_GUI = True
-except ImportError:
-    HAS_GUI = False
+# GUI 제거됨 - 자동 설치 모드만 지원
 
 
 # ==================== Agent 기능 (통합) ====================
@@ -151,6 +143,9 @@ def get_korea_time() -> datetime:
 
 def send_event(server_url: str, event_type: str, timestamp: datetime = None) -> bool:
     """이벤트를 서버로 전송 (재시도 포함)"""
+    config = load_config()
+    api_key = config.get('api_key', '')
+
     url = f"{server_url.rstrip('/')}/api/events"
     if timestamp is None:
         timestamp = get_korea_time()
@@ -159,12 +154,13 @@ def send_event(server_url: str, event_type: str, timestamp: datetime = None) -> 
         "event_type": event_type,
         "timestamp": timestamp.isoformat()
     }
+    headers = {"X-API-Key": api_key} if api_key else {}
 
     log_error(f"이벤트 전송 시작: {event_type}, URL={url}, data={data}")
 
     for attempt in range(MAX_RETRIES):
         try:
-            response = requests.post(url, json=data, timeout=5)
+            response = requests.post(url, json=data, headers=headers, timeout=5)
             log_error(f"서버 응답 (시도 {attempt + 1}): status={response.status_code}, body={response.text[:200]}")
             if response.status_code == 200:
                 try:
@@ -189,6 +185,9 @@ def send_shutdown_event_sync(server_url: str) -> bool:
 
     Windows 종료 시간이 제한적이므로 최소 재시도로 빠르게 전송
     """
+    config = load_config()
+    api_key = config.get('api_key', '')
+
     url = f"{server_url.rstrip('/')}/api/events"
     korea_time = get_korea_time()
     data = {
@@ -196,12 +195,13 @@ def send_shutdown_event_sync(server_url: str) -> bool:
         "event_type": "shutdown",
         "timestamp": korea_time.isoformat()
     }
+    headers = {"X-API-Key": api_key} if api_key else {}
 
     log_error(f"종료 이벤트 전송 시작: URL={url}")
     log_error(f"종료 이벤트 데이터: {data}")
 
     try:
-        response = requests.post(url, json=data, timeout=3)
+        response = requests.post(url, json=data, headers=headers, timeout=3)
         log_error(f"서버 응답: status={response.status_code}, body={response.text[:200]}")
         if response.status_code == 200:
             # 서버 응답 검증
@@ -458,15 +458,19 @@ def parse_event_timestamp(time_str: str) -> datetime:
 
 def check_server_connection(server_url: str) -> bool:
     """서버 연결 상태 확인"""
+    config = load_config()
+    api_key = config.get('api_key', '')
+    headers = {"X-API-Key": api_key} if api_key else {}
+
     try:
         url = f"{server_url.rstrip('/')}/api/health"
-        response = requests.get(url, timeout=5)
+        response = requests.get(url, headers=headers, timeout=5)
         return response.status_code == 200
     except Exception as e:
         log_error(f"서버 연결 확인 실패: {e}")
         # /api/health가 없을 수 있으므로 기본 URL로 재시도
         try:
-            response = requests.get(server_url, timeout=5)
+            response = requests.get(server_url, headers=headers, timeout=5)
             return response.status_code in (200, 404)  # 서버가 응답하면 OK
         except Exception:
             return False
@@ -482,6 +486,10 @@ def get_last_event_from_server(server_url: str, event_type: str) -> datetime:
     Returns:
         마지막 이벤트 timestamp (datetime) 또는 None
     """
+    config = load_config()
+    api_key = config.get('api_key', '')
+    headers = {"X-API-Key": api_key} if api_key else {}
+
     url = f"{server_url.rstrip('/')}/api/events/last"
     params = {
         "computer_name": get_computer_name(),
@@ -489,7 +497,7 @@ def get_last_event_from_server(server_url: str, event_type: str) -> datetime:
     }
 
     try:
-        response = requests.get(url, params=params, timeout=5)
+        response = requests.get(url, params=params, headers=headers, timeout=5)
         if response.status_code == 200:
             result = response.json()
             if result.get('found') and result.get('event'):
@@ -781,15 +789,19 @@ def run_shutdown_monitor(server_url: str):
 
 def send_heartbeat(server_url: str) -> bool:
     """하트비트를 서버로 전송 (실시간 온라인 상태용)"""
+    config = load_config()
+    api_key = config.get('api_key', '')
+
     url = f"{server_url.rstrip('/')}/api/heartbeat"
     params = {
         "computer_name": get_computer_name(),
         "ip_address": get_local_ip()
     }
+    headers = {"X-API-Key": api_key} if api_key else {}
 
     for attempt in range(MAX_RETRIES):
         try:
-            response = requests.post(url, params=params, timeout=10)
+            response = requests.post(url, params=params, headers=headers, timeout=10)
             if response.status_code == 200:
                 return True
         except:
@@ -849,20 +861,49 @@ def get_install_dir() -> Path:
     return Path(__file__).parent
 
 
-def save_config(server_url: str):
-    """설정 파일 저장"""
+def get_bundled_config_path() -> Path:
+    """PyInstaller 번들 내 config.json 경로 반환"""
+    if getattr(sys, 'frozen', False):
+        # PyInstaller 번들 내부 (_MEIPASS)
+        return Path(sys._MEIPASS) / "config.json"
+    return Path(__file__).parent / "config.json"
+
+
+def save_config(server_url: str, api_key: str = None):
+    """설정 파일 저장 (설치 디렉토리에)"""
     config_path = get_install_dir() / "config.json"
     config = {"server_url": server_url}
+    if api_key:
+        config["api_key"] = api_key
     with open(config_path, 'w', encoding='utf-8') as f:
-        json.dump(config, f, indent=2)
+        json.dump(config, f, indent=2, ensure_ascii=False)
 
 
 def load_config() -> dict:
-    """설정 파일 로드"""
-    config_path = get_install_dir() / "config.json"
-    if config_path.exists():
-        with open(config_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+    """설정 파일 로드
+
+    우선순위:
+    1. 설치 디렉토리의 config.json (이미 설치된 경우)
+    2. PyInstaller 번들 내 config.json (첫 설치 시)
+    """
+    # 1. 설치 디렉토리 확인
+    install_config_path = get_install_dir() / "config.json"
+    if install_config_path.exists():
+        try:
+            with open(install_config_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+
+    # 2. PyInstaller 번들 확인
+    bundled_config_path = get_bundled_config_path()
+    if bundled_config_path.exists():
+        try:
+            with open(bundled_config_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+
     return {}
 
 
@@ -986,13 +1027,17 @@ def unregister_task(task_name: str) -> bool:
 
 def register_to_server(server_url: str) -> bool:
     """서버에 PC 등록 (설치 시 호출)"""
+    config = load_config()
+    api_key = config.get('api_key', '')
+
     url = f"{server_url.rstrip('/')}/api/computers/register"
     params = {
         "computer_name": get_computer_name(),
         "ip_address": get_local_ip()
     }
+    headers = {"X-API-Key": api_key} if api_key else {}
     try:
-        response = requests.post(url, params=params, timeout=10)
+        response = requests.post(url, params=params, headers=headers, timeout=10)
         if response.status_code == 200:
             log_error("서버 등록 성공")
             return True
@@ -1007,8 +1052,17 @@ def install_agent(server_url: str) -> tuple:
     """Agent 설치"""
     results = []
 
-    save_config(server_url)
-    results.append(("설정 저장", True))
+    # 번들된 config에서 api_key 가져오기
+    config = load_config()
+    api_key = config.get('api_key', '')
+
+    # 설치 디렉토리에 config.json 저장 (api_key 포함)
+    try:
+        save_config(server_url, api_key)
+        results.append(("설정 저장", True))
+    except Exception as e:
+        log_error(f"설정 저장 실패: {e}")
+        results.append(("설정 저장", False))
 
     # 서버에 PC 등록 (즉시 관리자 페이지에 표시)
     register_result = register_to_server(server_url)
@@ -1085,165 +1139,99 @@ def uninstall_agent() -> tuple:
     return results
 
 
-class InstallerGUI:
-    def __init__(self):
-        self.root = tk.Tk()
-        self.root.title("ComputerOff Agent 설치")
-        self.root.geometry("450x320")
-        self.root.resizable(False, False)
-
-        self.setup_ui()
-        self.center_window()
-
-    def center_window(self):
-        self.root.update_idletasks()
-        width = self.root.winfo_width()
-        height = self.root.winfo_height()
-        x = (self.root.winfo_screenwidth() // 2) - (width // 2)
-        y = (self.root.winfo_screenheight() // 2) - (height // 2)
-        self.root.geometry(f'+{x}+{y}')
-
-    def setup_ui(self):
-        title_frame = tk.Frame(self.root, bg="#2c3e50", height=60)
-        title_frame.pack(fill=tk.X)
-        title_frame.pack_propagate(False)
-
-        title_label = tk.Label(
-            title_frame,
-            text="ComputerOff Agent",
-            font=("맑은 고딕", 16, "bold"),
-            bg="#2c3e50",
-            fg="white"
+def is_agent_installed() -> bool:
+    """기존 Agent 설치 여부 확인 (Task Scheduler 기준)"""
+    try:
+        result = subprocess.run(
+            ['schtasks', '/Query', '/TN', 'ComputerOff-Boot'],
+            capture_output=True,
+            text=True
         )
-        title_label.pack(pady=15)
+        return result.returncode == 0
+    except:
+        return False
 
-        main_frame = tk.Frame(self.root, padx=30, pady=20)
-        main_frame.pack(fill=tk.BOTH, expand=True)
 
-        url_label = tk.Label(
-            main_frame,
-            text="서버 주소:",
-            font=("맑은 고딕", 10)
-        )
-        url_label.pack(anchor=tk.W)
+def auto_install():
+    """자동 설치 (config.json의 설정 사용)
 
-        self.url_entry = tk.Entry(main_frame, font=("맑은 고딕", 11), width=40)
-        self.url_entry.pack(pady=(5, 15), fill=tk.X)
+    빌드 시 포함된 config.json의 server_url과 api_key를 사용하여 자동 설치
+    기존 설치가 있으면 자동으로 제거 후 재설치
+    """
+    print("=" * 50)
+    print("  ComputerOff Agent 자동 설치")
+    print("=" * 50)
+    print()
 
-        config = load_config()
-        if config.get('server_url'):
-            self.url_entry.insert(0, config['server_url'])
-        else:
-            self.url_entry.insert(0, "http://34.64.116.152:8000")
-
-        hint_label = tk.Label(
-            main_frame,
-            text="예: http://서버IP:8000 또는 http://123.45.67.89:8000",
-            font=("맑은 고딕", 9),
-            fg="#888"
-        )
-        hint_label.pack(anchor=tk.W)
-
-        btn_frame = tk.Frame(main_frame)
-        btn_frame.pack(pady=20)
-
-        install_btn = tk.Button(
-            btn_frame,
-            text="설치",
-            font=("맑은 고딕", 11),
-            width=12,
-            height=2,
-            bg="#27ae60",
-            fg="white",
-            command=self.on_install
-        )
-        install_btn.pack(side=tk.LEFT, padx=10)
-
-        # 제거 버튼은 관리자 권한일 때만 표시
-        if is_admin():
-            uninstall_btn = tk.Button(
-                btn_frame,
-                text="제거",
-                font=("맑은 고딕", 11),
-                width=12,
-                height=2,
-                bg="#e74c3c",
-                fg="white",
-                command=self.on_uninstall
+    # 관리자 권한 확인
+    if not is_admin():
+        print("[오류] 관리자 권한이 필요합니다.")
+        print("       프로그램을 관리자 권한으로 실행해주세요.")
+        print()
+        # Windows MessageBox로 알림
+        try:
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                "관리자 권한이 필요합니다.\n프로그램을 마우스 우클릭 후 '관리자 권한으로 실행'을 선택하세요.",
+                "ComputerOff Agent",
+                0x30  # MB_ICONWARNING
             )
-            uninstall_btn.pack(side=tk.LEFT, padx=10)
+        except:
+            pass
+        return False
 
-        self.status_label = tk.Label(
-            main_frame,
-            text="",
-            font=("맑은 고딕", 9),
-            fg="#666"
-        )
-        self.status_label.pack(pady=10)
+    # config.json에서 설정 로드
+    config = load_config()
+    server_url = config.get('server_url')
+    api_key = config.get('api_key')
 
-        if not is_admin():
-            self.status_label.config(
-                text="⚠ 관리자 권한이 필요합니다. 관리자로 실행해주세요.",
-                fg="#e74c3c"
-            )
+    if not server_url:
+        print("[오류] config.json에 server_url이 설정되지 않았습니다.")
+        return False
 
-    def on_install(self):
-        if not is_admin():
-            messagebox.showwarning(
-                "권한 필요",
-                "관리자 권한이 필요합니다.\n프로그램을 관리자 권한으로 실행해주세요."
-            )
-            return
+    if not api_key:
+        print("[경고] config.json에 api_key가 설정되지 않았습니다.")
+        print("       서버 인증이 실패할 수 있습니다.")
 
-        server_url = self.url_entry.get().strip()
-        if not server_url:
-            messagebox.showerror("오류", "서버 주소를 입력하세요.")
-            return
+    print(f"서버 주소: {server_url}")
+    print(f"API 키: {'설정됨' if api_key else '미설정'}")
+    print()
 
-        if not server_url.startswith(('http://', 'https://')):
-            messagebox.showerror("오류", "올바른 URL 형식이 아닙니다.\n예: http://192.168.1.100:8000")
-            return
-
-        results = install_agent(server_url)
-
-        success_count = sum(1 for _, success in results if success)
-        total_count = len(results)
-
-        result_text = "\n".join(
-            f"{'✓' if success else '✗'} {name}"
-            for name, success in results
-        )
-
-        if success_count == total_count:
-            messagebox.showinfo("설치 완료", f"Agent가 설치되었습니다.\n\n{result_text}")
-            self.status_label.config(text="✓ 설치 완료", fg="#27ae60")
-        else:
-            messagebox.showwarning("설치 부분 완료", f"일부 작업이 실패했습니다.\n\n{result_text}")
-            self.status_label.config(text="⚠ 설치 부분 완료", fg="#f39c12")
-
-    def on_uninstall(self):
-        if not is_admin():
-            messagebox.showwarning(
-                "권한 필요",
-                "관리자 권한이 필요합니다.\n프로그램을 관리자 권한으로 실행해주세요."
-            )
-            return
-
-        if not messagebox.askyesno("확인", "Agent를 제거하시겠습니까?"):
-            return
-
+    # 기존 설치 확인 및 제거
+    if is_agent_installed():
+        print("[정보] 기존 설치 감지됨 - 제거 중...")
         results = uninstall_agent()
+        for name, success in results:
+            status = "완료" if success else "실패"
+            print(f"  - {name}: {status}")
+        print()
 
-        result_text = "\n".join(
-            f"{'✓' if success else '✗'} {name}"
-            for name, success in results
-        )
+    # 새로 설치
+    print("[설치] Agent 설치 중...")
+    results = install_agent(server_url)
 
-        messagebox.showinfo("제거 완료", f"Agent가 제거되었습니다.\n\n{result_text}")
-        self.status_label.config(text="✓ 제거 완료", fg="#27ae60")
+    success_count = 0
+    for name, success in results:
+        status = "완료" if success else "실패"
+        symbol = "✓" if success else "✗"
+        print(f"  {symbol} {name}: {status}")
+        if success:
+            success_count += 1
 
-    def run(self):
-        self.root.mainloop()
+    print()
+
+    if success_count == len(results):
+        print("=" * 50)
+        print("  설치 완료!")
+        print("  컴퓨터를 다시 시작하면 자동으로 모니터링이 시작됩니다.")
+        print("=" * 50)
+        return True
+    else:
+        print("=" * 50)
+        print("  일부 설치 작업이 실패했습니다.")
+        print("  관리자 권한으로 다시 실행해 주세요.")
+        print("=" * 50)
+        return False
 
 
 def run_agent(event_type: str):
@@ -1279,30 +1267,8 @@ def run_agent(event_type: str):
         send_event(server_url, event_type)
 
 
-def cli_install(server_url: str):
-    """명령줄 설치 (GUI 없이)"""
-    if not is_admin():
-        print("오류: 관리자 권한이 필요합니다.")
-        print("관리자 권한으로 다시 실행해주세요.")
-        sys.exit(1)
-
-    print(f"서버 주소: {server_url}")
-    print("설치 중...")
-
-    results = install_agent(server_url)
-    for name, success in results:
-        status = "성공" if success else "실패"
-        print(f"  {name}: {status}")
-
-    success_count = sum(1 for _, s in results if s)
-    if success_count == len(results):
-        print("\n설치 완료!")
-    else:
-        print("\n일부 작업이 실패했습니다.")
-
-
 def cli_uninstall():
-    """명령줄 제거 (GUI 없이)"""
+    """명령줄 제거"""
     if not is_admin():
         print("오류: 관리자 권한이 필요합니다.")
         sys.exit(1)
@@ -1316,6 +1282,7 @@ def cli_uninstall():
 
 
 def main():
+    # 이벤트 실행 모드 (Task Scheduler에서 호출)
     if len(sys.argv) > 1:
         if sys.argv[1] == '--run' and len(sys.argv) > 2:
             event_type = sys.argv[2]
@@ -1323,60 +1290,33 @@ def main():
                 run_agent(event_type)
             return
 
-        # 명령줄 설치/제거
-        if sys.argv[1] == '--install' and len(sys.argv) > 2:
-            cli_install(sys.argv[2])
-            return
-
         if sys.argv[1] == '--uninstall':
             cli_uninstall()
             return
 
         if sys.argv[1] == '--help':
-            print("ComputerOff Agent 설치 프로그램")
+            print("ComputerOff Agent")
             print("")
             print("사용법:")
-            print("  computeroff-agent.exe                    GUI 설치")
-            print("  computeroff-agent.exe --install <URL>    명령줄 설치")
-            print("  computeroff-agent.exe --uninstall        명령줄 제거")
-            print("  computeroff-agent.exe --run <type>       이벤트 실행")
+            print("  agent_windows.exe              자동 설치 (관리자 권한 필요)")
+            print("  agent_windows.exe --uninstall  제거")
+            print("  agent_windows.exe --run <type> 이벤트 실행 (내부용)")
             print("")
             print("이벤트 타입:")
-            print("  boot       부팅 이벤트 (+ 미전송 종료 복구)")
-            print("  shutdown   종료 이벤트 (EventID 1074 폴백)")
-            print("  monitor    종료 모니터 (WM_ENDSESSION 감지)")
-            print("  heartbeat  하트비트 (온라인 상태 확인)")
-            print("")
-            print("예시:")
-            print("  computeroff-agent.exe --install http://192.168.1.100:8000")
+            print("  boot       부팅 이벤트")
+            print("  shutdown   종료 이벤트")
+            print("  monitor    종료 모니터")
+            print("  heartbeat  하트비트")
             return
 
-    # GUI 모드
-    if not HAS_GUI:
-        # tkinter 없을 때 Windows MessageBox 사용
-        msg = (
-            "ComputerOff Agent 설치 프로그램\n\n"
-            "GUI를 사용할 수 없습니다.\n\n"
-            "명령 프롬프트(관리자)에서 실행하세요:\n\n"
-            "설치: agent-win32.exe --install http://서버주소:8000\n"
-            "제거: agent-win32.exe --uninstall\n\n"
-            "예: agent-win32.exe --install http://192.168.1.100:8000"
-        )
-        ctypes.windll.user32.MessageBoxW(0, msg, "ComputerOff Agent", 0x40)
-        return
+    # 기본 동작: 자동 설치
+    success = auto_install()
 
-    try:
-        gui = InstallerGUI()
-        gui.run()
-    except Exception as e:
-        msg = (
-            f"GUI를 시작할 수 없습니다.\n\n"
-            f"사유: {e}\n\n"
-            "명령 프롬프트(관리자)에서 실행하세요:\n\n"
-            "설치: agent.exe --install http://서버주소:8000\n"
-            "제거: agent.exe --uninstall"
-        )
-        ctypes.windll.user32.MessageBoxW(0, msg, "ComputerOff Agent", 0x10)
+    # 설치 결과 대기 (사용자가 확인할 수 있도록)
+    print()
+    input("Enter 키를 누르면 종료합니다...")
+
+    sys.exit(0 if success else 1)
 
 
 if __name__ == "__main__":

@@ -36,16 +36,20 @@ def get_computer_name() -> str:
 
 def send_event(server_url: str, event_type: str) -> bool:
     """이벤트를 서버로 전송 (재시도 포함)"""
+    config = load_config()
+    api_key = config.get('api_key', '')
+
     url = f"{server_url.rstrip('/')}/api/events"
     data = {
         "computer_name": get_computer_name(),
         "event_type": event_type,
         "timestamp": datetime.now().isoformat()
     }
+    headers = {"X-API-Key": api_key} if api_key else {}
 
     for attempt in range(MAX_RETRIES):
         try:
-            response = requests.post(url, json=data, timeout=15)
+            response = requests.post(url, json=data, headers=headers, timeout=15)
             if response.status_code == 200:
                 return True
             log_error(f"이벤트 전송 실패 (시도 {attempt + 1}/{MAX_RETRIES}): HTTP {response.status_code}")
@@ -60,14 +64,18 @@ def send_event(server_url: str, event_type: str) -> bool:
 
 def send_heartbeat(server_url: str) -> bool:
     """하트비트를 서버로 전송 (실시간 온라인 상태용, 재시도 포함)"""
+    config = load_config()
+    api_key = config.get('api_key', '')
+
     url = f"{server_url.rstrip('/')}/api/heartbeat"
     params = {
         "computer_name": get_computer_name()
     }
+    headers = {"X-API-Key": api_key} if api_key else {}
 
     for attempt in range(MAX_RETRIES):
         try:
-            response = requests.post(url, params=params, timeout=10)
+            response = requests.post(url, params=params, headers=headers, timeout=10)
             if response.status_code == 200:
                 return True
         except Exception as e:
