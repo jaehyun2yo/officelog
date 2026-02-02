@@ -1,12 +1,27 @@
 import sqlite3
 import hashlib
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+# bcrypt 임포트 (없으면 SHA-256 폴백)
+try:
+    import bcrypt
+    HAS_BCRYPT = True
+except ImportError:
+    HAS_BCRYPT = False
+    print("[WARNING] bcrypt 미설치 - SHA-256 폴백 사용 (pip install bcrypt)")
+
 
 DB_PATH = Path(__file__).parent / "computeroff.db"
+
+# 비밀번호 정책 상수
+MIN_PASSWORD_LENGTH = 8
+BCRYPT_ROUNDS = 12
+
+# 레거시 SHA-256 마이그레이션 기간 (90일)
+LEGACY_MIGRATION_DAYS = 90
 
 
 def get_connection() -> sqlite3.Connection:
@@ -43,7 +58,7 @@ def init_db():
         )
     """)
 
-    # 설정 테이블 (비밀번호 등)
+    # 설정 테이블 (비밀번호, API 키 등)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
@@ -62,14 +77,47 @@ def init_db():
         )
     """)
 
-    # 세션 테이블 (로그인 세션)
+    # 세션 테이블 (로그인 세션) - token_hash, csrf_token, last_activity 컬럼 추가
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
             session_id TEXT PRIMARY KEY,
+            token_hash TEXT,
+            csrf_token TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            expires_at DATETIME NOT NULL
+            expires_at DATETIME NOT NULL,
+            last_activity DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
+
+    # 기존 sessions 테이블에 새 컬럼 추가 (마이그레이션)
+    try:
+        cursor.execute("ALTER TABLE sessions ADD COLUMN token_hash TEXT")
+    except sqlite3.OperationalError:
+        pass  # 이미 존재
+
+    try:
+        cursor.execute("ALTER TABLE sessions ADD COLUMN csrf_token TEXT")
+    except sqlite3.OperationalError:
+        pass  # 이미 존재
+
+    try:
+        cursor.execute("ALTER TABLE sessions ADD COLUMN last_activity DATETIME DEFAULT CURRENT_TIMESTAMP")
+    except sqlite3.OperationalError:
+        pass  # 이미 존재
+
+    # API 키 초기 생성 (없으면)
+    cursor.execute("SELECT value FROM settings WHERE key = 'api_key'")
+    if not cursor.fetchone():
+        api_key = secrets.token_urlsafe(32)
+        cursor.execute("""
+            INSERT INTO settings (key, value, updated_at)
+            VALUES ('api_key', ?, datetime('now', '+9 hours'))
+        """, (api_key,))
+        # API 키 표시 플래그 설정 (최초 1회만 표시)
+        cursor.execute("""
+            INSERT INTO settings (key, value, updated_at)
+            VALUES ('api_key_shown', 'false', datetime('now', '+9 hours'))
+        """)
 
     conn.commit()
     conn.close()
@@ -309,17 +357,62 @@ def set_setting(key: str, value: str):
     conn.close()
 
 
+# ==================== 비밀번호 해싱 함수 (bcrypt 우선, SHA-256 폴백) ====================
+
 def hash_password(password: str) -> str:
-    """비밀번호 SHA-256 해시"""
+    """비밀번호 bcrypt 해시 (bcrypt 없으면 SHA-256 폴백)"""
+    if HAS_BCRYPT:
+        # bcrypt 해시 생성 (12 rounds)
+        salt = bcrypt.gensalt(rounds=BCRYPT_ROUNDS)
+        hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
+        return hashed.decode('utf-8')
+    else:
+        # SHA-256 폴백 (bcrypt 미설치 시)
+        return hashlib.sha256(password.encode()).hexdigest()
+
+
+def _is_bcrypt_hash(stored_hash: str) -> bool:
+    """bcrypt 해시인지 확인 ($2b$ 접두사)"""
+    return stored_hash.startswith('$2b$') or stored_hash.startswith('$2a$')
+
+
+def _is_sha256_hash(stored_hash: str) -> bool:
+    """SHA-256 해시인지 확인 (64자 hex)"""
+    return len(stored_hash) == 64 and all(c in '0123456789abcdef' for c in stored_hash)
+
+
+def _hash_sha256(password: str) -> str:
+    """SHA-256 해시 (레거시 검증용)"""
     return hashlib.sha256(password.encode()).hexdigest()
 
 
 def verify_password(password: str) -> bool:
-    """비밀번호 검증"""
+    """비밀번호 검증 (bcrypt 우선, 레거시 SHA-256 자동 마이그레이션)"""
     stored_hash = get_setting('admin_password')
     if not stored_hash:
         return False
-    return hash_password(password) == stored_hash
+
+    # bcrypt 해시인 경우
+    if HAS_BCRYPT and _is_bcrypt_hash(stored_hash):
+        return bcrypt.checkpw(password.encode('utf-8'), stored_hash.encode('utf-8'))
+
+    # SHA-256 레거시 해시인 경우
+    if _is_sha256_hash(stored_hash):
+        if _hash_sha256(password) == stored_hash:
+            # 레거시 비밀번호 검증 성공 -> bcrypt로 자동 마이그레이션
+            if HAS_BCRYPT:
+                new_hash = hash_password(password)
+                set_setting('admin_password', new_hash)
+                print("[INFO] 비밀번호가 bcrypt로 자동 마이그레이션됨")
+            return True
+        return False
+
+    # bcrypt가 없고 bcrypt 해시가 저장된 경우
+    if not HAS_BCRYPT and _is_bcrypt_hash(stored_hash):
+        print("[ERROR] bcrypt 해시가 저장되어 있지만 bcrypt 미설치")
+        return False
+
+    return False
 
 
 def is_password_set() -> bool:
@@ -327,42 +420,158 @@ def is_password_set() -> bool:
     return get_setting('admin_password') is not None
 
 
+def validate_password_policy(password: str) -> tuple[bool, str]:
+    """비밀번호 정책 검증
+
+    Returns:
+        (통과 여부, 오류 메시지)
+    """
+    if len(password) < MIN_PASSWORD_LENGTH:
+        return False, f"비밀번호는 최소 {MIN_PASSWORD_LENGTH}자 이상이어야 합니다"
+
+    has_upper = any(c.isupper() for c in password)
+    has_lower = any(c.islower() for c in password)
+    has_digit = any(c.isdigit() for c in password)
+
+    if not (has_upper and has_lower and has_digit):
+        return False, "비밀번호는 대문자, 소문자, 숫자를 각각 1개 이상 포함해야 합니다"
+
+    return True, ""
+
+
+# ==================== API 키 관련 함수 ====================
+
+def get_api_key() -> Optional[str]:
+    """API 키 조회"""
+    return get_setting('api_key')
+
+
+def validate_api_key(api_key: str) -> bool:
+    """API 키 검증"""
+    stored_key = get_api_key()
+    if not stored_key:
+        return False
+    return secrets.compare_digest(api_key, stored_key)
+
+
+def rotate_api_key() -> str:
+    """API 키 순환 (새 키 생성)"""
+    new_key = secrets.token_urlsafe(32)
+    set_setting('api_key', new_key)
+    set_setting('api_key_shown', 'false')  # 새 키도 한 번만 표시
+    return new_key
+
+
+def get_api_key_if_first_time() -> Optional[str]:
+    """최초 1회만 API 키 반환 (보안)"""
+    shown = get_setting('api_key_shown')
+    if shown == 'false':
+        set_setting('api_key_shown', 'true')
+        return get_api_key()
+    return None
+
+
 # ==================== 세션 관련 함수 ====================
 
-def create_session() -> str:
-    """새 세션 생성 (24시간 유효)"""
+def _hash_session_token(session_id: str) -> str:
+    """세션 토큰 SHA-256 해시"""
+    return hashlib.sha256(session_id.encode()).hexdigest()
+
+
+def create_session() -> tuple[str, str]:
+    """새 세션 생성 (24시간 유효)
+
+    Returns:
+        (session_id, csrf_token)
+    """
     session_id = secrets.token_hex(32)
+    token_hash = _hash_session_token(session_id)
+    csrf_token = secrets.token_hex(32)
+
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO sessions (session_id, expires_at)
-        VALUES (?, datetime('now', '+9 hours', '+24 hours'))
-    """, (session_id,))
+        INSERT INTO sessions (session_id, token_hash, csrf_token, expires_at, last_activity)
+        VALUES (?, ?, ?, datetime('now', '+9 hours', '+24 hours'), datetime('now', '+9 hours'))
+    """, (session_id, token_hash, csrf_token))
     conn.commit()
     conn.close()
-    return session_id
+
+    return session_id, csrf_token
 
 
 def validate_session(session_id: str) -> bool:
-    """세션 유효성 확인"""
+    """세션 유효성 확인 (슬라이딩 만료 적용)"""
     if not session_id:
         return False
+
     conn = get_connection()
     cursor = conn.cursor()
+
+    # 해시 기반 검증 (보안 강화)
+    token_hash = _hash_session_token(session_id)
+
+    # Dual verification: 해시 또는 평문 (마이그레이션 기간)
     cursor.execute("""
         SELECT 1 FROM sessions
-        WHERE session_id = ? AND expires_at > datetime('now', '+9 hours')
-    """, (session_id,))
+        WHERE (token_hash = ? OR session_id = ?)
+        AND expires_at > datetime('now', '+9 hours')
+    """, (token_hash, session_id))
     row = cursor.fetchone()
+
+    if row:
+        # 슬라이딩 만료: 활동 시 만료 시간 갱신
+        cursor.execute("""
+            UPDATE sessions
+            SET last_activity = datetime('now', '+9 hours'),
+                expires_at = datetime('now', '+9 hours', '+24 hours')
+            WHERE token_hash = ? OR session_id = ?
+        """, (token_hash, session_id))
+        conn.commit()
+
     conn.close()
     return row is not None
+
+
+def get_session_csrf_token(session_id: str) -> Optional[str]:
+    """세션의 CSRF 토큰 조회"""
+    if not session_id:
+        return None
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    token_hash = _hash_session_token(session_id)
+
+    cursor.execute("""
+        SELECT csrf_token FROM sessions
+        WHERE (token_hash = ? OR session_id = ?)
+        AND expires_at > datetime('now', '+9 hours')
+    """, (token_hash, session_id))
+    row = cursor.fetchone()
+    conn.close()
+
+    return row['csrf_token'] if row else None
+
+
+def validate_csrf_token(session_id: str, csrf_token: str) -> bool:
+    """CSRF 토큰 검증"""
+    stored_token = get_session_csrf_token(session_id)
+    if not stored_token or not csrf_token:
+        return False
+    return secrets.compare_digest(stored_token, csrf_token)
 
 
 def delete_session(session_id: str):
     """세션 삭제"""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+
+    token_hash = _hash_session_token(session_id)
+
+    cursor.execute("""
+        DELETE FROM sessions WHERE token_hash = ? OR session_id = ?
+    """, (token_hash, session_id))
     conn.commit()
     conn.close()
 

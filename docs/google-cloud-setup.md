@@ -5,11 +5,13 @@
 ## 1. Google Cloud 계정 생성
 
 ### 시작하기
+
 - URL: https://cloud.google.com/free
 - 회원가입 후 $300 크레딧 (90일) + Always Free 제품 자동 활성화
 - 신용카드 필요 (자동 결제 안됨 - Free Tier 범위 내에서만 무료)
 
 ### 필수 사항
+
 - 유효한 신용카드 또는 계좌
 - 휴대폰 인증
 - Google 계정
@@ -17,12 +19,14 @@
 ## 2. Free Tier 제한사항
 
 ### Always Free 제품 한계
+
 - **VM 인스턴스**: e2-micro (0.25 vCPU, 1GB RAM) - 월 730시간
 - **저장소**: 표준 영구 디스크 30GB
 - **네트워크**: 북미 아웃바운드 1GB/월 (초과 시 유료)
 - **리전**: us-west1, us-central1, us-east1 **반드시 미국 리전만 선택**
 
 ### 무료 리전 확인
+
 ```
 - us-central1 (아이오와)
 - us-west1 (오리건)
@@ -44,6 +48,7 @@
    - "CREATE INSTANCE" 버튼 클릭
 
 3. **인스턴스 설정**
+
    ```
    이름 (Name): computeroff-server
    리전 (Region): us-central1
@@ -78,6 +83,7 @@
    - "CREATE FIREWALL RULE" 클릭
 
 3. **규칙 설정**
+
    ```
    이름: allow-computeroff
    방향: Ingress (수신)
@@ -90,6 +96,7 @@
    - "Create" 버튼 클릭
 
 ### 테스트
+
 ```bash
 curl http://<EXTERNAL_IP>:8000
 ```
@@ -97,11 +104,13 @@ curl http://<EXTERNAL_IP>:8000
 ## 5. SSH 접속
 
 ### 방법 1: 브라우저 콘솔 (추천)
+
 - Google Cloud Console에서 VM 인스턴스 클릭
 - "SSH" 버튼 클릭
 - 자동으로 브라우저 터미널 열림
 
 ### 방법 2: gcloud CLI
+
 ```bash
 # gcloud 설치 (https://cloud.google.com/sdk/docs/install)
 gcloud init
@@ -111,6 +120,7 @@ gcloud compute ssh computeroff-server --zone us-central1-a
 ```
 
 ### 방법 3: 일반 SSH
+
 ```bash
 # 외부 IP 확인
 gcloud compute instances describe computeroff-server \
@@ -124,17 +134,20 @@ ssh username@<EXTERNAL_IP>
 ## 6. 서버 배포
 
 ### 전제 조건
+
 - 로컬 머신에 computeroff 저장소 클론
 - VM에 SSH 접속 가능
 
 ### 배포 절차
 
 1. **VM 인스턴스에 접속**
+
    ```bash
    gcloud compute ssh computeroff-server --zone us-central1-a
    ```
 
 2. **저장소 클론 및 초기화**
+
    ```bash
    git clone <your-repo-url> computeroff
    cd computeroff
@@ -143,6 +156,7 @@ ssh username@<EXTERNAL_IP>
    ```
 
 3. **필요한 패키지 설치**
+
    ```bash
    # Python 및 필수 패키지
    sudo apt-get update
@@ -151,11 +165,13 @@ ssh username@<EXTERNAL_IP>
    ```
 
 4. **데이터베이스 초기화**
+
    ```bash
    python3 server/database.py
    ```
 
 5. **서버 시작**
+
    ```bash
    cd server
    python3 app.py
@@ -170,6 +186,7 @@ ssh username@<EXTERNAL_IP>
    ```
 
 ### 배포 확인
+
 ```bash
 curl http://localhost:8000/status
 ```
@@ -201,6 +218,7 @@ gcloud compute instances describe computeroff-server \
 ```
 
 ### 테스트
+
 ```bash
 curl http://<EXTERNAL_IP>:8000/status
 python3 client/agent.py
@@ -211,6 +229,7 @@ python3 client/agent.py
 ### 무료 범위 유지 방법
 
 **반드시 확인하세요:**
+
 - ✓ 리전: us-west1, us-central1, us-east1만 선택
 - ✓ 머신 타입: e2-micro만 사용
 - ✓ 디스크 크기: 30GB 이하 유지
@@ -218,12 +237,12 @@ python3 client/agent.py
 
 ### 비용 예상
 
-| 항목 | 무료 한계 | 초과 시 |
-|------|---------|--------|
-| e2-micro VM | 730시간/월 | $0.033/시간 |
-| 표준 디스크 | 30GB | $0.10/GB/월 |
-| 아웃바운드 (북미) | 1GB/월 | $0.12/GB |
-| 다른 리전 | 0GB | $0.12/GB |
+| 항목              | 무료 한계  | 초과 시     |
+| ----------------- | ---------- | ----------- |
+| e2-micro VM       | 730시간/월 | $0.033/시간 |
+| 표준 디스크       | 30GB       | $0.10/GB/월 |
+| 아웃바운드 (북미) | 1GB/월     | $0.12/GB    |
+| 다른 리전         | 0GB        | $0.12/GB    |
 
 ### 비용 모니터링
 
@@ -289,12 +308,15 @@ tail -f /var/log/computeroff.log
 **증상**: curl http://<IP>:8000 연결 타임아웃
 
 **해결방법**:
+
 1. 방화벽 규칙 확인
+
    ```bash
    gcloud compute firewall-rules list --filter="name:allow-computeroff"
    ```
 
 2. 인스턴스 상태 확인
+
    ```bash
    gcloud compute instances describe computeroff-server --zone us-central1-a
    ```
@@ -309,6 +331,7 @@ tail -f /var/log/computeroff.log
 **원인**: 미국 리전에서 한국으로 통신 (지연 정상)
 
 **개선방법**:
+
 - e2-micro의 한계 (CPU 자주 제한됨)
 - 대역폭 최적화 (압축, 캐싱 등)
 - 더 나은 성능 필요 시 유료 VM으로 업그레이드
@@ -318,6 +341,7 @@ tail -f /var/log/computeroff.log
 **증상**: database.py 실행 시 오류
 
 **해결방법**:
+
 ```bash
 # 데이터베이스 재초기화
 rm server/data/computeroff.db
@@ -351,6 +375,7 @@ python3 app.py
    - 개인 SSH 키만 사용
 
 2. **방화벽 제한**
+
    ```bash
    # 특정 IP에서만 접근 허용
    gcloud compute firewall-rules update allow-computeroff \
@@ -370,6 +395,7 @@ python3 app.py
 ## 12. 정리 및 비용 절감
 
 ### 사용하지 않을 때
+
 ```bash
 # VM 중지 (비용 거의 0)
 gcloud compute instances stop computeroff-server --zone us-central1-a
@@ -379,6 +405,7 @@ gcloud compute instances start computeroff-server --zone us-central1-a
 ```
 
 ### 완전히 제거
+
 ```bash
 # VM 삭제
 gcloud compute instances delete computeroff-server --zone us-central1-a
@@ -399,3 +426,7 @@ gcloud compute addresses delete computeroff-ip
 - [Compute Engine 가격](https://cloud.google.com/compute/pricing)
 - [gcloud 명령어 참조](https://cloud.google.com/sdk/gcloud/reference)
 - [Compute Engine 문서](https://cloud.google.com/compute/docs)
+
+- 32비트 PC: computeroff-agent-x86.exe + config.json 복사
+  - 64비트 PC: computeroff-agent-x64.exe + config.json 복사
+  - 관리자 권한으로 실행 후 설치

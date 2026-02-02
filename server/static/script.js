@@ -5,9 +5,15 @@ let deleteTarget = null;
 let isSettingPassword = false;
 let displayNameMap = {};  // hostname -> display_name 매핑
 let historyViewMode = 'summary';  // 'summary' or 'detail'
+let csrfToken = null;  // CSRF 토큰 저장
 
 async function fetchJSON(url) {
     const response = await fetch(url);
+    if (response.status === 401) {
+        // 인증 필요
+        showLoginUI();
+        throw new Error('Authentication required');
+    }
     return response.json();
 }
 
@@ -29,6 +35,11 @@ async function checkAuth() {
             return false;
         }
 
+        // CSRF 토큰 저장
+        if (data.csrf_token) {
+            csrfToken = data.csrf_token;
+        }
+
         // 인증됨 - 오버레이 숨김
         hideAuthOverlay();
         return true;
@@ -46,6 +57,12 @@ function showSetPasswordUI() {
     document.getElementById('auth-submit').textContent = '설정 완료';
     document.getElementById('auth-overlay').style.display = 'flex';
     document.getElementById('auth-password').focus();
+
+    // 비밀번호 정책 힌트 표시
+    const hint = document.getElementById('password-hint');
+    if (hint) {
+        hint.style.display = 'block';
+    }
 }
 
 function showLoginUI() {
@@ -56,6 +73,12 @@ function showLoginUI() {
     document.getElementById('auth-submit').textContent = '로그인';
     document.getElementById('auth-overlay').style.display = 'flex';
     document.getElementById('auth-password').focus();
+
+    // 비밀번호 정책 힌트 숨김
+    const hint = document.getElementById('password-hint');
+    if (hint) {
+        hint.style.display = 'none';
+    }
 }
 
 function hideAuthOverlay() {
@@ -63,6 +86,23 @@ function hideAuthOverlay() {
     document.getElementById('auth-password').value = '';
     document.getElementById('auth-password-confirm').value = '';
     document.getElementById('auth-error').textContent = '';
+}
+
+// 비밀번호 정책 검증 (프론트엔드)
+function validatePasswordPolicy(password) {
+    if (password.length < 8) {
+        return '비밀번호는 최소 8자 이상이어야 합니다.';
+    }
+
+    const hasUpper = /[A-Z]/.test(password);
+    const hasLower = /[a-z]/.test(password);
+    const hasDigit = /[0-9]/.test(password);
+
+    if (!hasUpper || !hasLower || !hasDigit) {
+        return '비밀번호는 대문자, 소문자, 숫자를 각각 1개 이상 포함해야 합니다.';
+    }
+
+    return null;  // 통과
 }
 
 async function handleAuth() {
@@ -82,8 +122,11 @@ async function handleAuth() {
             errorEl.textContent = '비밀번호가 일치하지 않습니다.';
             return;
         }
-        if (password.length < 4) {
-            errorEl.textContent = '비밀번호는 최소 4자 이상이어야 합니다.';
+
+        // 비밀번호 정책 검증
+        const policyError = validatePasswordPolicy(password);
+        if (policyError) {
+            errorEl.textContent = policyError;
             return;
         }
 
@@ -95,6 +138,10 @@ async function handleAuth() {
             });
 
             if (response.ok) {
+                const data = await response.json();
+                if (data.csrf_token) {
+                    csrfToken = data.csrf_token;
+                }
                 hideAuthOverlay();
                 refreshAll();
             } else {
@@ -114,6 +161,10 @@ async function handleAuth() {
             });
 
             if (response.ok) {
+                const data = await response.json();
+                if (data.csrf_token) {
+                    csrfToken = data.csrf_token;
+                }
                 hideAuthOverlay();
                 refreshAll();
             } else {
@@ -129,6 +180,7 @@ async function handleAuth() {
 async function logout() {
     try {
         await fetch('/api/auth/logout', { method: 'POST' });
+        csrfToken = null;
         showLoginUI();
     } catch (error) {
         console.error('Logout failed:', error);
@@ -230,14 +282,16 @@ async function loadComputers() {
                     </span>
                 </div>
                 <div class="computer-actions">
-                    <button class="action-btn edit-btn" onclick="openRenameModal('${pc.computer_name}', '${pc.display_name || ''}')" title="이름 변경">✏️</button>
-                    <button class="action-btn delete-btn" onclick="openDeleteModal('${pc.computer_name}')" title="삭제">🗑️</button>
+                    <button class="action-btn edit-btn" onclick="openRenameModal('${pc.computer_name}', '${pc.display_name || ''}')" title="이름 변경">&#9998;</button>
+                    <button class="action-btn delete-btn" onclick="openDeleteModal('${pc.computer_name}')" title="삭제">&#128465;</button>
                 </div>
             </div>
         `}).join('');
 
     } catch (error) {
-        container.innerHTML = `<div class="empty-state"><p>데이터를 불러올 수 없습니다</p></div>`;
+        if (error.message !== 'Authentication required') {
+            container.innerHTML = `<div class="empty-state"><p>데이터를 불러올 수 없습니다</p></div>`;
+        }
     }
 }
 
@@ -345,7 +399,7 @@ async function loadHistory() {
                         <div class="history-event ${event.event_type}">
                             <span class="history-time">${formatTime(event.timestamp)}</span>
                             <span class="history-type ${event.event_type}">
-                                ${event.event_type === 'boot' ? '▲ 컴퓨터 시작' : '▼ 컴퓨터 종료'}
+                                ${event.event_type === 'boot' ? '&#9650; 컴퓨터 시작' : '&#9660; 컴퓨터 종료'}
                             </span>
                         </div>
                     `;
@@ -358,7 +412,9 @@ async function loadHistory() {
         }
 
     } catch (error) {
-        container.innerHTML = `<div class="empty-state"><p>데이터를 불러올 수 없습니다</p></div>`;
+        if (error.message !== 'Authentication required') {
+            container.innerHTML = `<div class="empty-state"><p>데이터를 불러올 수 없습니다</p></div>`;
+        }
     }
 }
 
@@ -388,15 +444,23 @@ async function saveDisplayName() {
     }
 
     try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (csrfToken) {
+            headers['X-CSRF-Token'] = csrfToken;
+        }
+
         const response = await fetch(`/api/computers/${encodeURIComponent(renameTarget)}`, {
             method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
+            headers: headers,
             body: JSON.stringify({ display_name: newName })
         });
 
         if (response.ok) {
             closeRenameModal();
             loadComputers();
+        } else if (response.status === 403) {
+            alert('CSRF 토큰이 만료되었습니다. 페이지를 새로고침하세요.');
+            location.reload();
         } else {
             alert('이름 변경에 실패했습니다.');
         }
@@ -423,13 +487,22 @@ async function confirmDelete() {
     if (!deleteTarget) return;
 
     try {
+        const headers = {};
+        if (csrfToken) {
+            headers['X-CSRF-Token'] = csrfToken;
+        }
+
         const response = await fetch(`/api/computers/${encodeURIComponent(deleteTarget)}`, {
-            method: 'DELETE'
+            method: 'DELETE',
+            headers: headers
         });
 
         if (response.ok) {
             closeDeleteModal();
             refreshAll();
+        } else if (response.status === 403) {
+            alert('CSRF 토큰이 만료되었습니다. 페이지를 새로고침하세요.');
+            location.reload();
         } else {
             alert('삭제에 실패했습니다.');
         }
@@ -496,7 +569,9 @@ async function loadDailySummary() {
         });
         tbody.innerHTML = bodyHtml;
     } catch (error) {
-        tbody.innerHTML = '<tr><td colspan="100" class="empty-state">데이터를 불러올 수 없습니다</td></tr>';
+        if (error.message !== 'Authentication required') {
+            tbody.innerHTML = '<tr><td colspan="100" class="empty-state">데이터를 불러올 수 없습니다</td></tr>';
+        }
     }
 }
 
@@ -543,7 +618,7 @@ async function loadAllTimeline() {
 
             events.forEach(event => {
                 const displayName = event.display_name || event.computer_name;
-                const eventIcon = event.event_type === 'boot' ? '▲' : '▼';
+                const eventIcon = event.event_type === 'boot' ? '&#9650;' : '&#9660;';
                 const eventText = event.event_type === 'boot' ? '시작' : '종료';
                 html += `
                     <div class="timeline-event ${event.event_type}">
@@ -560,7 +635,9 @@ async function loadAllTimeline() {
         container.innerHTML = html;
 
     } catch (error) {
-        container.innerHTML = `<div class="empty-state"><p>데이터를 불러올 수 없습니다</p></div>`;
+        if (error.message !== 'Authentication required') {
+            container.innerHTML = `<div class="empty-state"><p>데이터를 불러올 수 없습니다</p></div>`;
+        }
     }
 }
 
@@ -637,7 +714,9 @@ async function loadDateSummary() {
         tbody.innerHTML = html;
 
     } catch (error) {
-        tbody.innerHTML = '<tr><td colspan="3" class="empty-state">데이터를 불러올 수 없습니다</td></tr>';
+        if (error.message !== 'Authentication required') {
+            tbody.innerHTML = '<tr><td colspan="3" class="empty-state">데이터를 불러올 수 없습니다</td></tr>';
+        }
     }
 }
 
