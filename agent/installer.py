@@ -1152,23 +1152,56 @@ def is_agent_installed() -> bool:
         return False
 
 
+def load_bundled_config() -> dict:
+    """PyInstaller 번들 내 config.json만 로드 (설치 시 사용)"""
+    bundled_config_path = get_bundled_config_path()
+    if bundled_config_path.exists():
+        try:
+            with open(bundled_config_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def alloc_console():
+    """콘솔 창 동적 생성 (windowed 모드에서 설치 시 사용)"""
+    try:
+        ctypes.windll.kernel32.AllocConsole()
+        # 표준 출력 재연결
+        sys.stdout = open('CONOUT$', 'w', encoding='utf-8')
+        sys.stderr = open('CONOUT$', 'w', encoding='utf-8')
+    except:
+        pass
+
+
+def free_console():
+    """콘솔 창 해제"""
+    try:
+        ctypes.windll.kernel32.FreeConsole()
+    except:
+        pass
+
+
+def print_progress(current: int, total: int, prefix: str = ""):
+    """진행바 출력"""
+    bar_length = 30
+    filled = int(bar_length * current / total)
+    bar = "█" * filled + "░" * (bar_length - filled)
+    percent = int(100 * current / total)
+    print(f"\r{prefix} [{bar}] {percent}%", end="", flush=True)
+    if current == total:
+        print()  # 완료 시 줄바꿈
+
+
 def auto_install():
     """자동 설치 (config.json의 설정 사용)
 
     빌드 시 포함된 config.json의 server_url과 api_key를 사용하여 자동 설치
     기존 설치가 있으면 자동으로 제거 후 재설치
     """
-    print("=" * 50)
-    print("  ComputerOff Agent 자동 설치")
-    print("=" * 50)
-    print()
-
     # 관리자 권한 확인
     if not is_admin():
-        print("[오류] 관리자 권한이 필요합니다.")
-        print("       프로그램을 관리자 권한으로 실행해주세요.")
-        print()
-        # Windows MessageBox로 알림
         try:
             ctypes.windll.user32.MessageBoxW(
                 0,
@@ -1180,62 +1213,89 @@ def auto_install():
             pass
         return False
 
-    # config.json에서 설정 로드
-    config = load_config()
+    # 콘솔 창 생성 (windowed 모드에서 진행바 표시용)
+    alloc_console()
+
+    print("ComputerOff Agent 설치")
+    print()
+
+    # 번들된 config.json에서 설정 로드 (기존 설치 config 무시)
+    config = load_bundled_config()
     server_url = config.get('server_url')
     api_key = config.get('api_key')
 
     if not server_url:
-        print("[오류] config.json에 server_url이 설정되지 않았습니다.")
+        print("오류: 설정 파일을 찾을 수 없습니다.")
         return False
 
-    if not api_key:
-        print("[경고] config.json에 api_key가 설정되지 않았습니다.")
-        print("       서버 인증이 실패할 수 있습니다.")
-
-    print(f"서버 주소: {server_url}")
-    print(f"API 키: {'설정됨' if api_key else '미설정'}")
-    print()
+    total_steps = 8  # 제거 2 + 설치 6
+    current_step = 0
 
     # 기존 설치 확인 및 제거
     if is_agent_installed():
-        print("[정보] 기존 설치 감지됨 - 제거 중...")
-        results = uninstall_agent()
-        for name, success in results:
-            status = "완료" if success else "실패"
-            print(f"  - {name}: {status}")
-        print()
+        print_progress(current_step, total_steps, "제거 중...")
+        uninstall_agent()
+        current_step += 2
+        print_progress(current_step, total_steps, "제거 완료")
 
     # 새로 설치
-    print("[설치] Agent 설치 중...")
-    results = install_agent(server_url)
+    print_progress(current_step, total_steps, "설치 중...")
 
-    success_count = 0
-    for name, success in results:
-        status = "완료" if success else "실패"
-        symbol = "✓" if success else "✗"
-        print(f"  {symbol} {name}: {status}")
-        if success:
-            success_count += 1
+    # 설정 저장
+    try:
+        save_config(server_url, api_key)
+        current_step += 1
+        print_progress(current_step, total_steps, "설치 중...")
+    except:
+        pass
+
+    # 서버 등록
+    register_to_server(server_url)
+    current_step += 1
+    print_progress(current_step, total_steps, "설치 중...")
+
+    # Task Scheduler 등록
+    register_task("ComputerOff-Boot", "boot")
+    current_step += 1
+    print_progress(current_step, total_steps, "설치 중...")
+
+    register_task("ComputerOff-Monitor", "monitor")
+    current_step += 1
+    print_progress(current_step, total_steps, "설치 중...")
+
+    register_task("ComputerOff-Shutdown", "shutdown")
+    current_step += 1
+    print_progress(current_step, total_steps, "설치 중...")
+
+    register_task("ComputerOff-Heartbeat", "heartbeat")
+    current_step += 1
+    print_progress(current_step, total_steps, "설치 완료")
 
     print()
+    print("설치가 완료되었습니다.")
+    time.sleep(2)
 
-    if success_count == len(results):
-        print("=" * 50)
-        print("  설치 완료!")
-        print("  컴퓨터를 다시 시작하면 자동으로 모니터링이 시작됩니다.")
-        print("=" * 50)
-        return True
-    else:
-        print("=" * 50)
-        print("  일부 설치 작업이 실패했습니다.")
-        print("  관리자 권한으로 다시 실행해 주세요.")
-        print("=" * 50)
-        return False
+    # 콘솔 창 해제
+    free_console()
+
+    return True
+
+
+def hide_console():
+    """콘솔 창 숨기기 (백그라운드 실행용)"""
+    try:
+        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
+    except:
+        pass
 
 
 def run_agent(event_type: str):
     """Agent 실행 (이벤트/하트비트 전송)"""
+    # 콘솔 창 숨기기 (Task Scheduler 실행 시)
+    hide_console()
+
     config = load_config()
     server_url = config.get('server_url')
 
@@ -1282,6 +1342,10 @@ def cli_uninstall():
 
 
 def main():
+    # --run 모드면 즉시 콘솔 숨기기 (Task Scheduler 실행 시)
+    if len(sys.argv) > 1 and sys.argv[1] == '--run':
+        hide_console()
+
     # 이벤트 실행 모드 (Task Scheduler에서 호출)
     if len(sys.argv) > 1:
         if sys.argv[1] == '--run' and len(sys.argv) > 2:
@@ -1311,11 +1375,6 @@ def main():
 
     # 기본 동작: 자동 설치
     success = auto_install()
-
-    # 설치 결과 대기 (사용자가 확인할 수 있도록)
-    print()
-    input("Enter 키를 누르면 종료합니다...")
-
     sys.exit(0 if success else 1)
 
 
