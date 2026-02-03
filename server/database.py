@@ -629,6 +629,36 @@ def delete_computer(hostname: str) -> int:
     return deleted_events
 
 
+def delete_all_computers() -> dict:
+    """모든 컴퓨터 및 관련 데이터 삭제"""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # 삭제 전 개수 조회
+    cursor.execute("SELECT COUNT(*) as cnt FROM events")
+    deleted_events = cursor.fetchone()['cnt']
+
+    cursor.execute("SELECT COUNT(DISTINCT computer_name) as cnt FROM events")
+    deleted_computers = cursor.fetchone()['cnt']
+
+    # 모든 이벤트 삭제
+    cursor.execute("DELETE FROM events")
+
+    # 모든 하트비트 삭제
+    cursor.execute("DELETE FROM heartbeats")
+
+    # 모든 컴퓨터 정보 삭제
+    cursor.execute("DELETE FROM computers")
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "deleted_computers": deleted_computers,
+        "deleted_events": deleted_events
+    }
+
+
 def get_all_display_names() -> dict:
     """모든 표시 이름 조회"""
     conn = get_connection()

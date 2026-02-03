@@ -54,9 +54,9 @@ if errorlevel 1 (
     set BUILD_32=1
 )
 
-REM 64비트 빌드 (콘솔 모드 - 설치 진행 상황 표시)
+REM 64비트 빌드 (windowed 모드 - 하트비트 실행 시 콘솔 창 표시 안 함)
 echo [4/5] 64비트 exe 빌드 중...
-py -3 -m PyInstaller --onefile --console --name agent_windows_x64 ^
+py -3 -m PyInstaller --onefile --windowed --name agent_windows_x64 ^
     --hidden-import requests ^
     --hidden-import json ^
     --hidden-import socket ^
@@ -66,7 +66,7 @@ py -3 -m PyInstaller --onefile --console --name agent_windows_x64 ^
 REM 32비트 빌드 (Windows 7 호환, Python 3.8-32)
 if "%BUILD_32%"=="1" (
     echo [5/5] 32비트 exe 빌드 중 (Windows 7 호환)...
-    py -3.8-32 -m PyInstaller --onefile --console --name agent_windows_x86 ^
+    py -3.8-32 -m PyInstaller --onefile --windowed --name agent_windows_x86 ^
         --hidden-import requests ^
         --hidden-import json ^
         --hidden-import socket ^

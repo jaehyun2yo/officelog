@@ -511,12 +511,61 @@ async function confirmDelete() {
     }
 }
 
+// 모두 삭제 모달 열기
+function openDeleteAllModal() {
+    document.getElementById('delete-all-confirm').value = '';
+    document.getElementById('delete-all-modal').classList.add('show');
+    document.getElementById('delete-all-confirm').focus();
+}
+
+// 모두 삭제 모달 닫기
+function closeDeleteAllModal() {
+    document.getElementById('delete-all-modal').classList.remove('show');
+    document.getElementById('delete-all-confirm').value = '';
+}
+
+// 모두 삭제 확인
+async function confirmDeleteAll() {
+    const confirmInput = document.getElementById('delete-all-confirm').value;
+    if (confirmInput !== '삭제') {
+        alert('"삭제"를 정확히 입력해주세요.');
+        return;
+    }
+
+    try {
+        const headers = {};
+        if (csrfToken) {
+            headers['X-CSRF-Token'] = csrfToken;
+        }
+
+        const response = await fetch('/api/computers', {
+            method: 'DELETE',
+            headers: headers
+        });
+
+        if (response.ok) {
+            const data = await response.json();
+            closeDeleteAllModal();
+            alert(`${data.deleted_computers}개의 컴퓨터와 ${data.deleted_events}개의 이벤트가 삭제되었습니다.`);
+            refreshAll();
+        } else if (response.status === 403) {
+            alert('CSRF 토큰이 만료되었습니다. 페이지를 새로고침하세요.');
+            location.reload();
+        } else {
+            alert('삭제에 실패했습니다.');
+        }
+    } catch (error) {
+        alert('오류가 발생했습니다.');
+    }
+}
+
 // ESC 키로 모달 닫기
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
         closeModal();
         closeRenameModal();
         closeDeleteModal();
+        closeDeleteAllModal();
     }
 });
 
@@ -527,6 +576,7 @@ document.querySelectorAll('.modal').forEach(modal => {
             closeModal();
             closeRenameModal();
             closeDeleteModal();
+            closeDeleteAllModal();
         }
     });
 });

@@ -43,7 +43,10 @@
 
         <div class="grid">
             <div class="card computers-list-card">
-                <h2>컴퓨터 목록 <span class="subtitle">(클릭하여 이력 조회)</span></h2>
+                <div class="card-header-with-action">
+                    <h2>컴퓨터 목록 <span class="subtitle">(클릭하여 이력 조회)</span></h2>
+                    <button class="btn btn-danger btn-sm" onclick="openDeleteAllModal()">모두 삭제</button>
+                </div>
                 <div id="computers-list">
                     <div class="empty-state">
                         <p>로딩 중...</p>
@@ -180,6 +183,30 @@
                 <div class="modal-actions">
                     <button class="btn btn-secondary" onclick="closeDeleteModal()">취소</button>
                     <button class="btn btn-danger" onclick="confirmDelete()">삭제</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 모두 삭제 확인 모달 -->
+    <div id="delete-all-modal" class="modal">
+        <div class="modal-content modal-small">
+            <div class="modal-header modal-header-danger">
+                <h2>⚠️ 모든 컴퓨터 삭제</h2>
+                <button class="modal-close" onclick="closeDeleteAllModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="delete-warning">
+                    <strong>모든 컴퓨터</strong>를 삭제하시겠습니까?
+                </p>
+                <p class="delete-info">이 작업은 되돌릴 수 없습니다. 모든 컴퓨터와 이벤트 기록이 영구적으로 삭제됩니다.</p>
+                <div class="form-group">
+                    <label for="delete-all-confirm">확인을 위해 "삭제"를 입력하세요:</label>
+                    <input type="text" id="delete-all-confirm" placeholder="삭제">
+                </div>
+                <div class="modal-actions">
+                    <button class="btn btn-secondary" onclick="closeDeleteAllModal()">취소</button>
+                    <button class="btn btn-danger" onclick="confirmDeleteAll()">모두 삭제</button>
                 </div>
             </div>
         </div>

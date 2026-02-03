@@ -157,6 +157,21 @@ header p {
     color: #999;
 }
 
+.card-header-with-action {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 10px;
+}
+
+.card-header-with-action h2 {
+    margin-bottom: 0;
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
 .computer-item {
     display: flex;
     align-items: center;
@@ -630,6 +645,11 @@ header p {
 
 .btn-danger:hover {
     background: #c82333;
+}
+
+.btn-sm {
+    padding: 6px 12px;
+    font-size: 12px;
 }
 
 .modal-header-danger {
