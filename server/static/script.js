@@ -783,6 +783,11 @@ async function loadUsageChart() {
         const computersData = await fetchJSON('/api/computers');
 
         if (summaryData.summary.length === 0 || computersData.computers.length === 0) {
+            // 데이터가 없으면 기존 그래프 제거
+            if (usageChart) {
+                usageChart.destroy();
+                usageChart = null;
+            }
             return;
         }
 
