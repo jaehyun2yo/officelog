@@ -702,16 +702,17 @@ def get_daily_summary(days: int = 7) -> list[dict]:
     """하루 단위 시작/종료 요약 조회"""
     conn = get_connection()
     cursor = conn.cursor()
+    # ISO 형식 타임스탬프 처리를 위해 strftime 사용
     cursor.execute("""
         SELECT
-            DATE(timestamp) as date,
+            strftime('%Y-%m-%d', timestamp) as date,
             computer_name,
-            MIN(CASE WHEN event_type = 'boot' THEN TIME(timestamp) END) as first_boot,
-            MAX(CASE WHEN event_type = 'shutdown' THEN TIME(timestamp) END) as last_shutdown
+            MIN(CASE WHEN event_type = 'boot' THEN strftime('%H:%M:%S', timestamp) END) as first_boot,
+            MAX(CASE WHEN event_type = 'shutdown' THEN strftime('%H:%M:%S', timestamp) END) as last_shutdown
         FROM events
-        WHERE timestamp >= DATE('now', '+9 hours', ?)
+        WHERE timestamp >= strftime('%Y-%m-%d', datetime('now', '+9 hours', ?))
         AND event_type IN ('boot', 'shutdown')
-        GROUP BY DATE(timestamp), computer_name
+        GROUP BY strftime('%Y-%m-%d', timestamp), computer_name
         ORDER BY date DESC, computer_name
     """, (f'-{days} days',))
     rows = cursor.fetchall()
@@ -729,18 +730,19 @@ def get_computer_daily_summary(computer_name: str, days: int = 30) -> list[dict]
     """특정 컴퓨터의 하루 단위 시작/종료 요약 조회"""
     conn = get_connection()
     cursor = conn.cursor()
+    # ISO 형식 타임스탬프 처리를 위해 strftime 사용
     cursor.execute("""
         SELECT
-            DATE(timestamp) as date,
-            MIN(CASE WHEN event_type = 'boot' THEN TIME(timestamp) END) as first_boot,
-            MAX(CASE WHEN event_type = 'shutdown' THEN TIME(timestamp) END) as last_shutdown,
+            strftime('%Y-%m-%d', timestamp) as date,
+            MIN(CASE WHEN event_type = 'boot' THEN strftime('%H:%M:%S', timestamp) END) as first_boot,
+            MAX(CASE WHEN event_type = 'shutdown' THEN strftime('%H:%M:%S', timestamp) END) as last_shutdown,
             SUM(CASE WHEN event_type = 'boot' THEN 1 ELSE 0 END) as boot_count,
             SUM(CASE WHEN event_type = 'shutdown' THEN 1 ELSE 0 END) as shutdown_count
         FROM events
         WHERE computer_name = ?
-        AND timestamp >= DATE('now', '+9 hours', ?)
+        AND timestamp >= strftime('%Y-%m-%d', datetime('now', '+9 hours', ?))
         AND event_type IN ('boot', 'shutdown')
-        GROUP BY DATE(timestamp)
+        GROUP BY strftime('%Y-%m-%d', timestamp)
         ORDER BY date DESC
     """, (computer_name, f'-{days} days'))
     rows = cursor.fetchall()

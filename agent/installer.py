@@ -350,8 +350,8 @@ def parse_event_xml(xml_output: str, since_timestamp: datetime = None) -> list:
             # UTC를 KST로 변환
             timestamp_kst = timestamp + timedelta(hours=9)
 
-            # since_timestamp 이후의 이벤트만
-            if since_timestamp and timestamp_kst <= since_timestamp:
+            # since_timestamp 이후의 이벤트만 (1초 여유를 두어 경계 조건 문제 방지)
+            if since_timestamp and timestamp_kst < since_timestamp - timedelta(seconds=1):
                 continue
 
             # 종료 타입 결정
@@ -555,6 +555,10 @@ def recover_missed_shutdown_events(server_url: str) -> int:
     elif last_sent_on_server:
         last_sent = last_sent_on_server
         log_error(f"서버 시간 사용: {last_sent}")
+        # 로컬 상태가 없으면 서버 기준으로 동기화 (상태 파일 복원력 강화)
+        state['last_sent_shutdown'] = last_sent_on_server.isoformat()
+        save_state(state)
+        log_error(f"로컬 상태를 서버 기준으로 동기화: {last_sent_on_server.isoformat()}")
     elif last_sent_local:
         last_sent = last_sent_local
         log_error(f"로컬 시간 사용: {last_sent}")
@@ -581,14 +585,22 @@ def recover_missed_shutdown_events(server_url: str) -> int:
 
     # 미전송 이벤트 필터링 및 전송
     sent_count = 0
-    last_record_id = state.get('last_sent_event_record_id', 0)
+    last_record_id = state.get('last_sent_event_record_id')
     log_error(f"마지막 전송 record_id: {last_record_id}")
 
     for event in events:
-        # record_id로도 중복 체크 (더 안전)
-        if event['record_id'] <= last_record_id:
-            log_error(f"건너뜀 (record_id 중복): record_id={event['record_id']}")
-            continue
+        # record_id 중복 체크 (이벤트 로그 리셋 감지 포함)
+        # - record_id가 있고 유효한 경우에만 비교
+        # - 이벤트 로그 리셋 시 record_id가 작아질 수 있으므로 timestamp도 함께 확인
+        if last_record_id is not None and last_record_id > 0:
+            if event['record_id'] <= last_record_id:
+                # timestamp로 이중 검증 - timestamp도 이전이면 진짜 중복
+                if event['timestamp'] <= last_sent:
+                    log_error(f"건너뜀 (중복 확인됨): record_id={event['record_id']}, timestamp={event['timestamp']}")
+                    continue
+                else:
+                    # record_id는 작지만 timestamp가 최신 - 이벤트 로그 리셋된 경우
+                    log_error(f"이벤트 로그 리셋 감지: record_id={event['record_id']} <= {last_record_id}, but timestamp={event['timestamp']} > {last_sent}")
 
         log_error(f"미전송 종료 이벤트 복구 시도: {event['shutdown_type']} at {event['timestamp']} (record_id={event['record_id']})")
 
