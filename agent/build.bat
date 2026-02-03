@@ -6,6 +6,20 @@ echo   (서버 URL + API 키 포함 빌드)
 echo ========================================
 echo.
 
+REM config.json 확인 (있으면 자동 사용)
+if exist "config.json" (
+    echo [자동] config.json 파일 발견 - 자동 빌드 모드
+    echo.
+    type config.json
+    echo.
+    goto :build
+)
+
+REM config.json이 없으면 수동 입력
+echo config.json 파일이 없습니다. 수동으로 입력하세요.
+echo (자동 빌드: config.json 파일을 미리 생성하세요)
+echo.
+
 REM 서버 URL 입력
 set /p SERVER_URL="서버 URL (예: http://34.64.116.152:8000): "
 if "%SERVER_URL%"=="" (
@@ -33,6 +47,7 @@ echo [1/5] config.json 생성 중...
 echo {"server_url": "%SERVER_URL%", "api_key": "%API_KEY%"} > config.json
 echo       config.json 생성 완료
 
+:build
 REM Python 확인
 py -0 >nul 2>&1
 if errorlevel 1 (
