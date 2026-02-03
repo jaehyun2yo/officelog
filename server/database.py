@@ -23,9 +23,15 @@ BCRYPT_ROUNDS = 12
 # 레거시 SHA-256 마이그레이션 기간 (90일)
 LEGACY_MIGRATION_DAYS = 90
 
+# 온라인 판단 기준 (초) - 하트비트 60초 * 3 = 180초
+# 1회 하트비트 누락 허용, Task Scheduler 지연 고려
+ONLINE_THRESHOLD_SECONDS = 180
+
 
 def get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(DB_PATH), timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -206,7 +212,7 @@ def get_computers() -> list[dict]:
         data = dict(row)
         last_seen = data.get('last_seen')
 
-        # 하트비트 기반 온라인 상태 (120초 이내 하트비트 있으면 온라인)
+        # 하트비트 기반 온라인 상태 (ONLINE_THRESHOLD_SECONDS 이내 하트비트 있으면 온라인)
         if last_seen:
             cursor.execute("""
                 SELECT (julianday('now', '+9 hours') - julianday(?)) * 86400 as seconds_ago
@@ -214,7 +220,7 @@ def get_computers() -> list[dict]:
             result_check = cursor.fetchone()
             seconds_ago = result_check['seconds_ago'] if result_check else 9999
 
-            data['status'] = 'online' if seconds_ago < 120 else 'offline'
+            data['status'] = 'online' if seconds_ago < ONLINE_THRESHOLD_SECONDS else 'offline'
             data['seconds_ago'] = int(seconds_ago)
         else:
             # 하트비트 없으면 이벤트 기반으로 판단
@@ -833,9 +839,10 @@ def get_computers_needing_shutdown_recovery() -> list[dict]:
     """종료 이벤트 복구가 필요한 컴퓨터 목록 조회
 
     조건:
-    1. 하트비트가 60초 이상 지남 (오프라인)
+    1. 하트비트가 ONLINE_THRESHOLD_SECONDS 이상 지남 (오프라인)
     2. 마지막 boot 이후 shutdown 이벤트가 없음
     3. last_seen이 last_boot 이후여야 함 (안전장치)
+    4. 같은 시간에 이미 shutdown 이벤트가 없어야 함 (중복 방지)
 
     Returns:
         복구 대상 컴퓨터 목록 [{computer_name, last_boot, last_seen}, ...]
@@ -843,6 +850,7 @@ def get_computers_needing_shutdown_recovery() -> list[dict]:
     conn = get_connection()
     cursor = conn.cursor()
 
+    # NOT EXISTS 조건 추가로 중복 삽입 방지
     cursor.execute("""
         SELECT
             h.computer_name,
@@ -851,10 +859,16 @@ def get_computers_needing_shutdown_recovery() -> list[dict]:
             MAX(CASE WHEN e.event_type = 'shutdown' THEN e.timestamp END) as last_shutdown
         FROM heartbeats h
         JOIN events e ON h.computer_name = e.computer_name
+        WHERE NOT EXISTS (
+            SELECT 1 FROM events e2
+            WHERE e2.computer_name = h.computer_name
+            AND e2.event_type = 'shutdown'
+            AND datetime(e2.timestamp) = datetime(h.last_seen)
+        )
         GROUP BY h.computer_name, h.last_seen
         HAVING
-            -- 조건 1: 오프라인 (60초 이상 하트비트 없음)
-            (julianday('now', '+9 hours') - julianday(h.last_seen)) * 86400 >= 60
+            -- 조건 1: 오프라인 (ONLINE_THRESHOLD_SECONDS 이상 하트비트 없음)
+            (julianday('now', '+9 hours') - julianday(h.last_seen)) * 86400 >= ?
             -- 조건 2: last_boot이 존재
             AND last_boot IS NOT NULL
             -- 조건 3: shutdown이 없거나 last_boot > last_shutdown
@@ -862,7 +876,7 @@ def get_computers_needing_shutdown_recovery() -> list[dict]:
             -- 조건 4: last_seen >= last_boot (하트비트가 부팅 이후에 발생)
             -- datetime() 함수로 정규화하여 ISO 8601(T 구분)과 SQLite(공백 구분) 형식 비교 문제 해결
             AND datetime(h.last_seen) >= datetime(last_boot)
-    """)
+    """, (ONLINE_THRESHOLD_SECONDS,))
 
     rows = cursor.fetchall()
     conn.close()

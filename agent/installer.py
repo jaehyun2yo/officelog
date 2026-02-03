@@ -800,9 +800,21 @@ def run_shutdown_monitor(server_url: str):
 
 
 def send_heartbeat(server_url: str) -> bool:
-    """하트비트를 서버로 전송 (실시간 온라인 상태용)"""
+    """하트비트를 서버로 전송 (실시간 온라인 상태용)
+
+    구조화된 에러 처리:
+    - 401 인증 실패: 연속 3회 실패 시 하트비트 건너뛰기 (자동 복구 지원)
+    - 500+ 서버 오류: 로깅 후 재시도
+    - 네트워크 오류: 로깅 후 재시도
+    """
     config = load_config()
     api_key = config.get('api_key', '')
+    state = load_state()
+
+    # API 키 무효 상태 확인 (연속 실패 기반)
+    if state.get('api_key_fail_count', 0) >= 3:
+        log_error("[SKIP] API 키 연속 3회 실패 - 하트비트 건너뜀")
+        return False
 
     url = f"{server_url.rstrip('/')}/api/heartbeat"
     params = {
@@ -814,10 +826,32 @@ def send_heartbeat(server_url: str) -> bool:
     for attempt in range(MAX_RETRIES):
         try:
             response = requests.post(url, params=params, headers=headers, timeout=10)
+
             if response.status_code == 200:
+                # 성공: 실패 카운터 리셋
+                if state.get('api_key_fail_count', 0) > 0:
+                    state['api_key_fail_count'] = 0
+                    save_state(state)
                 return True
-        except:
-            pass
+
+            elif response.status_code == 401:
+                # API 키 인증 실패 - 카운터 증가 (즉시 무효화 X)
+                state['api_key_fail_count'] = state.get('api_key_fail_count', 0) + 1
+                log_error(f"[AUTH] API 키 인증 실패 (401) - 실패 횟수: {state['api_key_fail_count']}/3")
+                save_state(state)
+                return False  # 재시도 무의미
+
+            elif response.status_code >= 500:
+                log_error(f"[SERVER] 서버 오류 (HTTP {response.status_code})")
+            else:
+                log_error(f"[HTTP] 예상치 못한 응답: HTTP {response.status_code}")
+
+        except requests.exceptions.Timeout as e:
+            log_error(f"[TIMEOUT] 하트비트 타임아웃: {e}")
+        except requests.exceptions.ConnectionError as e:
+            log_error(f"[NETWORK] 연결 실패: {e}")
+        except Exception as e:
+            log_error(f"[ERROR] 예상치 못한 오류: {type(e).__name__}: {e}")
 
         if attempt < MAX_RETRIES - 1:
             time.sleep(1)
@@ -1253,6 +1287,15 @@ def auto_install():
     # 새로 설치
     print_progress(current_step, total_steps, "설치 중...")
 
+    # 상태 파일 초기화 (이전 오류 상태 클리어 - api_key_fail_count 등)
+    state_path = get_install_dir() / STATE_FILE
+    if state_path.exists():
+        try:
+            state_path.unlink()
+            log_error("[INSTALL] 이전 상태 파일 초기화됨")
+        except Exception:
+            pass
+
     # 설정 저장
     try:
         save_config(server_url, api_key)
@@ -1266,22 +1309,44 @@ def auto_install():
     current_step += 1
     print_progress(current_step, total_steps, "설치 중...")
 
-    # Task Scheduler 등록
-    register_task("ComputerOff-Boot", "boot")
+    # Task Scheduler 등록 및 결과 수집
+    task_results = {}
+
+    task_results['boot'] = register_task("ComputerOff-Boot", "boot")
     current_step += 1
     print_progress(current_step, total_steps, "설치 중...")
 
-    register_task("ComputerOff-Monitor", "monitor")
+    task_results['monitor'] = register_task("ComputerOff-Monitor", "monitor")
     current_step += 1
     print_progress(current_step, total_steps, "설치 중...")
 
-    register_task("ComputerOff-Shutdown", "shutdown")
+    task_results['shutdown'] = register_task("ComputerOff-Shutdown", "shutdown")
     current_step += 1
     print_progress(current_step, total_steps, "설치 중...")
 
-    register_task("ComputerOff-Heartbeat", "heartbeat")
+    task_results['heartbeat'] = register_task("ComputerOff-Heartbeat", "heartbeat")
     current_step += 1
     print_progress(current_step, total_steps, "설치 완료")
+
+    # 필수 작업 검증 (shutdown은 복구 로직이 대체하므로 선택적)
+    critical_tasks = ['boot', 'monitor', 'heartbeat']
+    failed = [name for name in critical_tasks if not task_results.get(name)]
+
+    if failed:
+        log_error(f"[INSTALL] 필수 작업 등록 실패: {failed}")
+        print()
+        print(f"경고: 일부 작업 등록 실패 - {', '.join(failed)}")
+        try:
+            ctypes.windll.user32.MessageBoxW(
+                0,
+                f"필수 작업 등록 실패: {', '.join(failed)}\n\n관리자 권한으로 다시 실행하세요.",
+                "ComputerOff Agent - 오류",
+                0x10  # MB_ICONERROR
+            )
+        except:
+            pass
+        free_console()
+        return False
 
     print()
     print("설치가 완료되었습니다.")
