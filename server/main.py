@@ -1,6 +1,9 @@
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# 한국 시간대 (UTC+9)
+KST = timezone(timedelta(hours=9))
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Response, Request, Depends, Header
@@ -95,13 +98,13 @@ class EventCreate(BaseModel):
     @classmethod
     def validate_timestamp(cls, v):
         if v is not None:
+            # 한국 시간 기준으로 검증 (서버가 UTC여도 KST 기준)
+            now_kst = datetime.now(KST).replace(tzinfo=None)
             # 미래 시간 검증 (1시간 이내 허용)
-            now = datetime.now()
-            if v > now.replace(hour=now.hour + 1 if now.hour < 23 else 0):
+            if v > now_kst + timedelta(hours=1):
                 raise ValueError('timestamp가 미래 시간입니다')
             # 너무 오래된 시간 검증 (30일 이내)
-            from datetime import timedelta
-            if v < now - timedelta(days=30):
+            if v < now_kst - timedelta(days=30):
                 raise ValueError('timestamp가 30일 이상 과거입니다')
         return v
 
@@ -359,6 +362,17 @@ def delete_computer(
     """컴퓨터 및 관련 이벤트 삭제 (CSRF 보호)"""
     deleted_events = database.delete_computer(hostname)
     return {"status": "ok", "hostname": hostname, "deleted_events": deleted_events}
+
+
+@app.delete("/api/computers")
+def delete_all_computers(
+    request: Request,
+    _session: str = Depends(verify_session),
+    _csrf: str = Depends(verify_csrf)
+):
+    """모든 컴퓨터 및 관련 이벤트 삭제 (CSRF 보호)"""
+    result = database.delete_all_computers()
+    return {"status": "ok", **result}
 
 
 # ==================== 인증 API ====================
