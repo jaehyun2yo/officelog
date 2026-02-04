@@ -55,6 +55,28 @@ def init_db():
         ON events(computer_name, timestamp)
     """)
 
+    # events 테이블에 새 컬럼 추가 (마이그레이션)
+    try:
+        cursor.execute("ALTER TABLE events ADD COLUMN event_detail TEXT")
+    except sqlite3.OperationalError:
+        pass  # 이미 존재
+
+    try:
+        cursor.execute("ALTER TABLE events ADD COLUMN event_source TEXT DEFAULT 'realtime'")
+    except sqlite3.OperationalError:
+        pass  # 이미 존재
+
+    try:
+        cursor.execute("ALTER TABLE events ADD COLUMN event_record_id INTEGER")
+    except sqlite3.OperationalError:
+        pass  # 이미 존재
+
+    # event_record_id 기반 중복 방지 인덱스
+    cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_event_record
+        ON events(computer_name, event_record_id) WHERE event_record_id IS NOT NULL
+    """)
+
     # 하트비트 테이블 (실시간 온라인 상태 확인용)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS heartbeats (
@@ -111,38 +133,56 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # 이미 존재
 
-    # API 키 초기 생성 (없으면)
-    cursor.execute("SELECT value FROM settings WHERE key = 'api_key'")
-    if not cursor.fetchone():
-        api_key = secrets.token_urlsafe(32)
-        cursor.execute("""
-            INSERT INTO settings (key, value, updated_at)
-            VALUES ('api_key', ?, datetime('now', '+9 hours'))
-        """, (api_key,))
-        # API 키 표시 플래그 설정 (최초 1회만 표시)
-        cursor.execute("""
-            INSERT INTO settings (key, value, updated_at)
-            VALUES ('api_key_shown', 'false', datetime('now', '+9 hours'))
-        """)
-
     conn.commit()
     conn.close()
 
 
-def insert_event(computer_name: str, event_type: str, timestamp: datetime) -> int:
+def insert_event(
+    computer_name: str,
+    event_type: str,
+    timestamp: datetime,
+    event_detail: Optional[str] = None,
+    event_source: str = 'realtime',
+    event_record_id: Optional[int] = None
+) -> tuple[int, bool]:
+    """이벤트 삽입
+
+    Args:
+        computer_name: 컴퓨터 이름
+        event_type: 이벤트 타입 (boot/shutdown)
+        timestamp: 이벤트 발생 시간
+        event_detail: 이벤트 상세 (log_start/kernel_boot/realtime/normal/unexpected/user_initiated)
+        event_source: 이벤트 소스 (realtime/event_log)
+        event_record_id: Windows 이벤트 로그 레코드 ID (중복 체크용)
+
+    Returns:
+        (event_id, is_duplicate): 이벤트 ID와 중복 여부
+    """
     conn = get_connection()
     cursor = conn.cursor()
 
+    # event_record_id가 있으면 중복 체크
+    if event_record_id is not None:
+        cursor.execute("""
+            SELECT id FROM events
+            WHERE computer_name = ? AND event_record_id = ?
+        """, (computer_name, event_record_id))
+        existing = cursor.fetchone()
+        if existing:
+            conn.close()
+            return existing['id'], True  # 중복
+
     cursor.execute(
-        "INSERT INTO events (computer_name, event_type, timestamp) VALUES (?, ?, ?)",
-        (computer_name, event_type, timestamp.isoformat())
+        """INSERT INTO events (computer_name, event_type, timestamp, event_detail, event_source, event_record_id)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (computer_name, event_type, timestamp.isoformat(), event_detail, event_source, event_record_id)
     )
 
     event_id = cursor.lastrowid
     conn.commit()
     conn.close()
 
-    return event_id
+    return event_id, False
 
 
 def get_events(
@@ -445,38 +485,6 @@ def validate_password_policy(password: str) -> tuple[bool, str]:
     return True, ""
 
 
-# ==================== API 키 관련 함수 ====================
-
-def get_api_key() -> Optional[str]:
-    """API 키 조회"""
-    return get_setting('api_key')
-
-
-def validate_api_key(api_key: str) -> bool:
-    """API 키 검증"""
-    stored_key = get_api_key()
-    if not stored_key:
-        return False
-    return secrets.compare_digest(api_key, stored_key)
-
-
-def rotate_api_key() -> str:
-    """API 키 순환 (새 키 생성)"""
-    new_key = secrets.token_urlsafe(32)
-    set_setting('api_key', new_key)
-    set_setting('api_key_shown', 'false')  # 새 키도 한 번만 표시
-    return new_key
-
-
-def get_api_key_if_first_time() -> Optional[str]:
-    """최초 1회만 API 키 반환 (보안)"""
-    shown = get_setting('api_key_shown')
-    if shown == 'false':
-        set_setting('api_key_shown', 'true')
-        return get_api_key()
-    return None
-
-
 # ==================== 세션 관련 함수 ====================
 
 def _hash_session_token(session_id: str) -> str:
@@ -739,17 +747,27 @@ def get_daily_summary(days: int = 7) -> list[dict]:
     conn = get_connection()
     cursor = conn.cursor()
     # ISO 형식 타임스탬프 처리를 위해 strftime 사용
+    # 서브쿼리로 마지막 종료 이벤트의 event_detail 조회
     cursor.execute("""
         SELECT
-            strftime('%Y-%m-%d', timestamp) as date,
-            computer_name,
-            MIN(CASE WHEN event_type = 'boot' THEN strftime('%H:%M:%S', timestamp) END) as first_boot,
-            MAX(CASE WHEN event_type = 'shutdown' THEN strftime('%H:%M:%S', timestamp) END) as last_shutdown
-        FROM events
-        WHERE timestamp >= strftime('%Y-%m-%d', datetime('now', '+9 hours', ?))
-        AND event_type IN ('boot', 'shutdown')
-        GROUP BY strftime('%Y-%m-%d', timestamp), computer_name
-        ORDER BY date DESC, computer_name
+            strftime('%Y-%m-%d', e.timestamp) as date,
+            e.computer_name,
+            MIN(CASE WHEN e.event_type = 'boot' THEN strftime('%H:%M:%S', e.timestamp) END) as first_boot,
+            MAX(CASE WHEN e.event_type = 'shutdown' THEN strftime('%H:%M:%S', e.timestamp) END) as last_shutdown,
+            (
+                SELECT e2.event_detail
+                FROM events e2
+                WHERE e2.computer_name = e.computer_name
+                AND strftime('%Y-%m-%d', e2.timestamp) = strftime('%Y-%m-%d', e.timestamp)
+                AND e2.event_type = 'shutdown'
+                ORDER BY e2.timestamp DESC
+                LIMIT 1
+            ) as shutdown_detail
+        FROM events e
+        WHERE e.timestamp >= strftime('%Y-%m-%d', datetime('now', '+9 hours', ?))
+        AND e.event_type IN ('boot', 'shutdown')
+        GROUP BY strftime('%Y-%m-%d', e.timestamp), e.computer_name
+        ORDER BY date DESC, e.computer_name
     """, (f'-{days} days',))
     rows = cursor.fetchall()
     conn.close()
@@ -796,6 +814,8 @@ def get_all_events_timeline(days: int = 7, limit: int = 100) -> list[dict]:
             e.computer_name,
             e.event_type,
             e.timestamp,
+            e.event_detail,
+            e.event_source,
             c.display_name
         FROM events e
         LEFT JOIN computers c ON e.computer_name = c.hostname

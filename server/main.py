@@ -79,6 +79,9 @@ class EventCreate(BaseModel):
     computer_name: str
     event_type: str
     timestamp: Optional[datetime] = None
+    event_detail: Optional[str] = None      # 이벤트 상세 (log_start/kernel_boot/normal/unexpected/user_initiated)
+    event_source: Optional[str] = 'realtime'  # 이벤트 소스 (realtime/event_log)
+    event_record_id: Optional[int] = None   # Windows 이벤트 로그 레코드 ID
 
     @field_validator('computer_name')
     @classmethod
@@ -106,6 +109,22 @@ class EventCreate(BaseModel):
             # 너무 오래된 시간 검증 (30일 이내)
             if v < now_kst - timedelta(days=30):
                 raise ValueError('timestamp가 30일 이상 과거입니다')
+        return v
+
+    @field_validator('event_detail')
+    @classmethod
+    def validate_event_detail(cls, v):
+        valid_details = ('log_start', 'kernel_boot', 'realtime', 'normal', 'unexpected', 'user_initiated', None)
+        if v is not None and v not in valid_details:
+            raise ValueError(f'event_detail은 {valid_details} 중 하나여야 합니다')
+        return v
+
+    @field_validator('event_source')
+    @classmethod
+    def validate_event_source(cls, v):
+        valid_sources = ('realtime', 'event_log')
+        if v is not None and v not in valid_sources:
+            raise ValueError(f'event_source는 {valid_sources} 중 하나여야 합니다')
         return v
 
 
@@ -156,15 +175,6 @@ class PasswordRequest(BaseModel):
 
 # ==================== 의존성 함수 ====================
 
-def verify_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-Key")):
-    """API 키 검증 (Agent 엔드포인트용)"""
-    if not x_api_key:
-        raise HTTPException(status_code=401, detail="API 키가 필요합니다")
-    if not database.validate_api_key(x_api_key):
-        raise HTTPException(status_code=401, detail="유효하지 않은 API 키입니다")
-    return x_api_key
-
-
 def verify_session(request: Request):
     """세션 검증 (Dashboard 엔드포인트용)"""
     session = request.cookies.get("session")
@@ -190,31 +200,25 @@ def verify_csrf(request: Request, x_csrf_token: Optional[str] = Header(None, ali
 @app.on_event("startup")
 def startup():
     database.init_db()
-    # 최초 실행 시 API 키 표시
-    api_key = database.get_api_key_if_first_time()
-    if api_key:
-        print("\n" + "=" * 60)
-        print("  ComputerOff 서버 최초 실행")
-        print("=" * 60)
-        print(f"  API Key: {api_key}")
-        print("  (이 키는 다시 표시되지 않습니다. 안전하게 보관하세요)")
-        print("=" * 60 + "\n")
 
 
 # ==================== Agent 엔드포인트 (API 키 인증) ====================
 
 @app.post("/api/events", response_model=dict)
 @limiter.limit("60/minute")
-def create_event(request: Request, event: EventCreate, _: str = Depends(verify_api_key)):
+def create_event(request: Request, event: EventCreate):
     """이벤트 생성 (Agent용, API 키 필수)"""
     timestamp = event.timestamp or datetime.now()
-    event_id = database.insert_event(
+    event_id, is_duplicate = database.insert_event(
         computer_name=event.computer_name,
         event_type=event.event_type,
-        timestamp=timestamp
+        timestamp=timestamp,
+        event_detail=event.event_detail,
+        event_source=event.event_source or 'realtime',
+        event_record_id=event.event_record_id
     )
 
-    return {"id": event_id, "status": "ok"}
+    return {"id": event_id, "status": "ok", "duplicate": is_duplicate}
 
 
 @app.post("/api/heartbeat")
@@ -222,8 +226,7 @@ def create_event(request: Request, event: EventCreate, _: str = Depends(verify_a
 def heartbeat(
     request: Request,
     computer_name: str,
-    ip_address: Optional[str] = None,
-    _: str = Depends(verify_api_key)
+    ip_address: Optional[str] = None
 ):
     """하트비트 수신 (Agent용, API 키 필수)"""
     # computer_name 검증
@@ -239,8 +242,7 @@ def heartbeat(
 def register_computer(
     request: Request,
     computer_name: str,
-    ip_address: Optional[str] = None,
-    _: str = Depends(verify_api_key)
+    ip_address: Optional[str] = None
 ):
     """PC 등록 (Agent용, API 키 필수)"""
     # computer_name 검증
@@ -256,8 +258,7 @@ def register_computer(
 def get_last_event(
     request: Request,
     computer_name: str,
-    event_type: str,
-    _: str = Depends(verify_api_key)
+    event_type: str
 ):
     """특정 컴퓨터의 마지막 이벤트 조회 (Agent용, API 키 필수)"""
     # 입력 검증
@@ -458,17 +459,6 @@ def logout(request: Request, response: Response):
 
 
 # ==================== 관리자 API ====================
-
-@app.post("/api/admin/rotate-api-key")
-def rotate_api_key(
-    request: Request,
-    _session: str = Depends(verify_session),
-    _csrf: str = Depends(verify_csrf)
-):
-    """API 키 순환 (Dashboard용, 세션 + CSRF 필수)"""
-    new_key = database.rotate_api_key()
-    return {"status": "ok", "api_key": new_key}
-
 
 # ==================== 타임라인 API (세션 인증) ====================
 

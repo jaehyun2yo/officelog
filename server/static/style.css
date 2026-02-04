@@ -1013,6 +1013,47 @@ header p {
     color: #721c24;
 }
 
+/* 이벤트 상세 배지 */
+.event-detail-badge {
+    font-size: 10px;
+    font-weight: normal;
+    color: #666;
+    margin-left: 4px;
+}
+
+/* 종료 상태 배지 */
+.shutdown-status {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.shutdown-status.status-normal {
+    background: #d4edda;
+    color: #155724;
+}
+
+.shutdown-status.status-unexpected {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+.shutdown-status.status-user {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.shutdown-status.status-realtime {
+    background: #cce5ff;
+    color: #004085;
+}
+
+.today-summary-table td.status-cell {
+    text-align: center;
+}
+
 @media (max-width: 768px) {
     .grid {
         grid-template-columns: 1fr;

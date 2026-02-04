@@ -141,11 +141,24 @@ def get_korea_time() -> datetime:
     return datetime.now()
 
 
-def send_event(server_url: str, event_type: str, timestamp: datetime = None) -> bool:
-    """이벤트를 서버로 전송 (재시도 포함)"""
-    config = load_config()
-    api_key = config.get('api_key', '')
+def send_event(
+    server_url: str,
+    event_type: str,
+    timestamp: datetime = None,
+    event_detail: str = None,
+    event_source: str = 'realtime',
+    event_record_id: int = None
+) -> bool:
+    """이벤트를 서버로 전송 (재시도 포함)
 
+    Args:
+        server_url: 서버 URL
+        event_type: 이벤트 타입 (boot/shutdown)
+        timestamp: 이벤트 발생 시간
+        event_detail: 이벤트 상세 (log_start/kernel_boot/normal/unexpected/user_initiated)
+        event_source: 이벤트 소스 (realtime/event_log)
+        event_record_id: Windows 이벤트 로그 레코드 ID
+    """
     url = f"{server_url.rstrip('/')}/api/events"
     if timestamp is None:
         timestamp = get_korea_time()
@@ -154,7 +167,16 @@ def send_event(server_url: str, event_type: str, timestamp: datetime = None) -> 
         "event_type": event_type,
         "timestamp": timestamp.isoformat()
     }
-    headers = {"X-API-Key": api_key} if api_key else {}
+
+    # 선택적 필드 추가
+    if event_detail:
+        data["event_detail"] = event_detail
+    if event_source:
+        data["event_source"] = event_source
+    if event_record_id is not None:
+        data["event_record_id"] = event_record_id
+
+    headers = {}
 
     log_error(f"이벤트 전송 시작: {event_type}, URL={url}, data={data}")
 
@@ -165,7 +187,8 @@ def send_event(server_url: str, event_type: str, timestamp: datetime = None) -> 
             if response.status_code == 200:
                 try:
                     result = response.json()
-                    log_error(f"이벤트 전송 성공: {event_type}, id={result.get('id')}")
+                    is_duplicate = result.get('duplicate', False)
+                    log_error(f"이벤트 전송 성공: {event_type}, id={result.get('id')}, duplicate={is_duplicate}")
                 except ValueError:
                     log_error(f"이벤트 전송 성공: {event_type} (non-JSON response)")
                 return True
@@ -185,9 +208,6 @@ def send_shutdown_event_sync(server_url: str) -> bool:
 
     Windows 종료 시간이 제한적이므로 최소 재시도로 빠르게 전송
     """
-    config = load_config()
-    api_key = config.get('api_key', '')
-
     url = f"{server_url.rstrip('/')}/api/events"
     korea_time = get_korea_time()
     data = {
@@ -195,7 +215,7 @@ def send_shutdown_event_sync(server_url: str) -> bool:
         "event_type": "shutdown",
         "timestamp": korea_time.isoformat()
     }
-    headers = {"X-API-Key": api_key} if api_key else {}
+    headers = {}
 
     log_error(f"종료 이벤트 전송 시작: URL={url}")
     log_error(f"종료 이벤트 데이터: {data}")
@@ -265,6 +285,128 @@ def update_state_after_shutdown(timestamp: datetime, record_id: int = None):
 
 
 # ==================== 이벤트 로그 복구 ====================
+
+def get_boot_events_from_log(since_timestamp: datetime = None, max_events: int = 5) -> list:
+    """Windows 이벤트 로그에서 부팅 이벤트 조회
+
+    EventID:
+    - 6005: 이벤트 로그 서비스 시작 (System) -> log_start
+    - 12: Kernel-General 부팅 (System) -> kernel_boot
+    """
+    query = "*[System[(EventID=6005 or EventID=12)]]"
+
+    try:
+        result = subprocess.run(
+            ['wevtutil', 'qe', 'System',
+             '/q:' + query,
+             '/c:' + str(max_events),
+             '/f:xml',
+             '/rd:true'],  # 최신순
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode != 0:
+            log_error(f"부팅 이벤트 로그 조회 실패: {result.stderr}")
+            return []
+
+        return parse_boot_event_xml(result.stdout, since_timestamp)
+
+    except subprocess.TimeoutExpired:
+        log_error("부팅 이벤트 로그 조회 타임아웃")
+        return []
+    except Exception as e:
+        log_error(f"부팅 이벤트 로그 조회 실패: {e}")
+        return []
+
+
+def parse_boot_event_xml(xml_output: str, since_timestamp: datetime = None) -> list:
+    """부팅 이벤트 로그 XML 파싱"""
+    events = []
+
+    if not xml_output.strip():
+        return events
+
+    wrapped_xml = f"<Events>{xml_output}</Events>"
+
+    try:
+        root = ElementTree.fromstring(wrapped_xml)
+    except ElementTree.ParseError:
+        log_error("부팅 이벤트 XML 파싱 실패")
+        return events
+
+    ns = {'evt': 'http://schemas.microsoft.com/win/2004/08/events/event'}
+
+    for event_elem in root.findall('.//evt:Event', ns):
+        try:
+            system = event_elem.find('evt:System', ns)
+            if system is None:
+                continue
+
+            event_id_elem = system.find('evt:EventID', ns)
+            time_created_elem = system.find('evt:TimeCreated', ns)
+            event_record_id_elem = system.find('evt:EventRecordID', ns)
+
+            if event_id_elem is None or time_created_elem is None:
+                continue
+
+            event_id = int(event_id_elem.text)
+            time_str = time_created_elem.get('SystemTime', '')
+            record_id = int(event_record_id_elem.text) if event_record_id_elem is not None else 0
+
+            timestamp = parse_event_timestamp(time_str)
+            if timestamp is None:
+                continue
+
+            # UTC를 KST로 변환
+            timestamp_kst = timestamp + timedelta(hours=9)
+
+            # since_timestamp 이후의 이벤트만
+            if since_timestamp and timestamp_kst < since_timestamp - timedelta(seconds=1):
+                continue
+
+            # 부팅 타입 결정
+            if event_id == 6005:
+                boot_type = "log_start"
+            else:  # 12
+                boot_type = "kernel_boot"
+
+            events.append({
+                'event_type': 'boot',
+                'event_id': event_id,
+                'event_detail': boot_type,
+                'timestamp': timestamp_kst,
+                'record_id': record_id
+            })
+
+        except Exception as e:
+            log_error(f"부팅 이벤트 파싱 오류: {e}")
+            continue
+
+    return events
+
+
+def get_all_events_from_log(since_timestamp: datetime = None, max_events: int = 20) -> list:
+    """부팅/종료 모든 이벤트 수집 (시간순 정렬)
+
+    Returns:
+        [{'event_type': 'boot'/'shutdown',
+          'event_detail': 'log_start'/'kernel_boot'/'normal'/'unexpected'/'user_initiated',
+          'timestamp': datetime,
+          'record_id': int}, ...]
+    """
+    boot_events = get_boot_events_from_log(since_timestamp, max_events)
+    shutdown_events = get_shutdown_events_from_log(since_timestamp, max_events)
+
+    # shutdown_events의 shutdown_type을 event_detail로 변환
+    for event in shutdown_events:
+        event['event_type'] = 'shutdown'
+        event['event_detail'] = event.pop('shutdown_type', 'normal')
+
+    all_events = boot_events + shutdown_events
+    return sorted(all_events, key=lambda e: e['timestamp'])
+
 
 def get_shutdown_events_from_log(since_timestamp: datetime = None, max_events: int = 5) -> list:
     """Windows 이벤트 로그에서 종료 이벤트 조회
@@ -458,19 +600,15 @@ def parse_event_timestamp(time_str: str) -> datetime:
 
 def check_server_connection(server_url: str) -> bool:
     """서버 연결 상태 확인"""
-    config = load_config()
-    api_key = config.get('api_key', '')
-    headers = {"X-API-Key": api_key} if api_key else {}
-
     try:
         url = f"{server_url.rstrip('/')}/api/health"
-        response = requests.get(url, headers=headers, timeout=5)
+        response = requests.get(url, timeout=5)
         return response.status_code == 200
     except Exception as e:
         log_error(f"서버 연결 확인 실패: {e}")
         # /api/health가 없을 수 있으므로 기본 URL로 재시도
         try:
-            response = requests.get(server_url, headers=headers, timeout=5)
+            response = requests.get(server_url, timeout=5)
             return response.status_code in (200, 404)  # 서버가 응답하면 OK
         except Exception:
             return False
@@ -486,10 +624,6 @@ def get_last_event_from_server(server_url: str, event_type: str) -> datetime:
     Returns:
         마지막 이벤트 timestamp (datetime) 또는 None
     """
-    config = load_config()
-    api_key = config.get('api_key', '')
-    headers = {"X-API-Key": api_key} if api_key else {}
-
     url = f"{server_url.rstrip('/')}/api/events/last"
     params = {
         "computer_name": get_computer_name(),
@@ -497,7 +631,7 @@ def get_last_event_from_server(server_url: str, event_type: str) -> datetime:
     }
 
     try:
-        response = requests.get(url, params=params, headers=headers, timeout=5)
+        response = requests.get(url, params=params, timeout=5)
         if response.status_code == 200:
             result = response.json()
             if result.get('found') and result.get('event'):
@@ -516,15 +650,14 @@ def get_last_event_from_server(server_url: str, event_type: str) -> datetime:
         return None
 
 
-def recover_missed_shutdown_events(server_url: str) -> int:
-    """부팅 시 미전송 종료 이벤트 복구
+def recover_missed_events(server_url: str) -> int:
+    """부팅 시 미전송 이벤트 복구 (부팅/종료 모두)
 
     개선된 복구 로직:
-    1. 서버에서 마지막 전송된 shutdown 이벤트 시간 조회
-    2. 로컬 상태 파일과 비교하여 더 최신 시간 사용
-    3. 이벤트 로그에서 그 이후의 종료 이벤트 조회 및 전송
+    1. 서버에서 마지막 전송된 이벤트 시간 조회
+    2. 이벤트 로그에서 그 이후의 모든 이벤트 조회 및 전송
     """
-    log_error("recover_missed_shutdown_events 시작")
+    log_error("recover_missed_events 시작")
     state = load_state()
     log_error(f"현재 로컬 상태: {state}")
 
@@ -535,9 +668,11 @@ def recover_missed_shutdown_events(server_url: str) -> int:
         return 0
     log_error("서버 연결 확인 완료")
 
-    # 서버에서 마지막 전송된 shutdown 이벤트 시간 조회
-    last_sent_on_server = get_last_event_from_server(server_url, 'shutdown')
-    log_error(f"서버의 마지막 shutdown 시간: {last_sent_on_server}")
+    # 서버에서 마지막 전송된 이벤트 시간 조회
+    last_boot_on_server = get_last_event_from_server(server_url, 'boot')
+    last_shutdown_on_server = get_last_event_from_server(server_url, 'shutdown')
+    log_error(f"서버의 마지막 boot 시간: {last_boot_on_server}")
+    log_error(f"서버의 마지막 shutdown 시간: {last_shutdown_on_server}")
 
     # 로컬 상태에서 마지막 전송 시간 조회
     last_sent_local = None
@@ -548,39 +683,31 @@ def recover_missed_shutdown_events(server_url: str) -> int:
         except ValueError as e:
             log_error(f"로컬 last_sent_shutdown 파싱 실패: {e}")
 
-    # 둘 중 더 최신 시간 사용 (더 안전한 기준)
-    if last_sent_on_server and last_sent_local:
-        last_sent = max(last_sent_on_server, last_sent_local)
-        log_error(f"비교 기준 시간 (둘 중 최신): {last_sent}")
-    elif last_sent_on_server:
-        last_sent = last_sent_on_server
-        log_error(f"서버 시간 사용: {last_sent}")
-        # 로컬 상태가 없으면 서버 기준으로 동기화 (상태 파일 복원력 강화)
-        state['last_sent_shutdown'] = last_sent_on_server.isoformat()
-        save_state(state)
-        log_error(f"로컬 상태를 서버 기준으로 동기화: {last_sent_on_server.isoformat()}")
-    elif last_sent_local:
-        last_sent = last_sent_local
-        log_error(f"로컬 시간 사용: {last_sent}")
+    # 가장 최신 시간 결정 (모든 소스 중)
+    timestamps = [t for t in [last_boot_on_server, last_shutdown_on_server, last_sent_local] if t]
+    if timestamps:
+        last_sent = max(timestamps)
+        log_error(f"비교 기준 시간 (가장 최신): {last_sent}")
     else:
-        # 둘 다 없으면 첫 실행 - 상태 초기화만
+        # 모두 없으면 첫 실행 - 최근 이벤트로 상태 초기화
         log_error("첫 실행 - 서버/로컬 모두 기록 없음, 상태 초기화")
-        events = get_shutdown_events_from_log(max_events=1)
+        events = get_all_events_from_log(max_events=1)
         if events:
-            state['last_sent_shutdown'] = events[0]['timestamp'].isoformat()
-            state['last_sent_event_record_id'] = events[0]['record_id']
-            save_state(state)
+            if events[0]['event_type'] == 'shutdown':
+                state['last_sent_shutdown'] = events[0]['timestamp'].isoformat()
+                state['last_sent_event_record_id'] = events[0]['record_id']
+                save_state(state)
             log_error(f"상태 초기화 완료: {state}")
         return 0
 
-    # 이벤트 로그에서 last_sent 이후의 종료 이벤트 조회
-    events = get_shutdown_events_from_log(since_timestamp=last_sent, max_events=5)
-    log_error(f"이벤트 로그에서 조회된 종료 이벤트: {len(events)}개")
+    # 이벤트 로그에서 last_sent 이후의 모든 이벤트 조회
+    events = get_all_events_from_log(since_timestamp=last_sent, max_events=10)
+    log_error(f"이벤트 로그에서 조회된 이벤트: {len(events)}개")
     for i, event in enumerate(events):
         log_error(f"  [{i}] {event}")
 
     if not events:
-        log_error("복구할 종료 이벤트 없음")
+        log_error("복구할 이벤트 없음")
         return 0
 
     # 미전송 이벤트 필터링 및 전송
@@ -589,36 +716,36 @@ def recover_missed_shutdown_events(server_url: str) -> int:
     log_error(f"마지막 전송 record_id: {last_record_id}")
 
     for event in events:
-        # record_id 중복 체크 (이벤트 로그 리셋 감지 포함)
-        # - record_id가 있고 유효한 경우에만 비교
-        # - 이벤트 로그 리셋 시 record_id가 작아질 수 있으므로 timestamp도 함께 확인
-        if last_record_id is not None and last_record_id > 0:
-            if event['record_id'] <= last_record_id:
-                # timestamp로 이중 검증 - timestamp도 이전이면 진짜 중복
-                if event['timestamp'] <= last_sent:
-                    log_error(f"건너뜀 (중복 확인됨): record_id={event['record_id']}, timestamp={event['timestamp']}")
-                    continue
-                else:
-                    # record_id는 작지만 timestamp가 최신 - 이벤트 로그 리셋된 경우
-                    log_error(f"이벤트 로그 리셋 감지: record_id={event['record_id']} <= {last_record_id}, but timestamp={event['timestamp']} > {last_sent}")
+        # 서버로 전송 (event_record_id로 중복 방지)
+        log_error(f"미전송 이벤트 복구 시도: {event['event_type']}({event['event_detail']}) at {event['timestamp']} (record_id={event['record_id']})")
 
-        log_error(f"미전송 종료 이벤트 복구 시도: {event['shutdown_type']} at {event['timestamp']} (record_id={event['record_id']})")
-
-        # 서버로 전송
-        if send_event(server_url, 'shutdown', event['timestamp']):
+        if send_event(
+            server_url=server_url,
+            event_type=event['event_type'],
+            timestamp=event['timestamp'],
+            event_detail=event['event_detail'],
+            event_source='event_log',
+            event_record_id=event['record_id']
+        ):
             sent_count += 1
-            # 상태 업데이트
-            update_state_after_shutdown(event['timestamp'], event['record_id'])
+            # 상태 업데이트 (shutdown만)
+            if event['event_type'] == 'shutdown':
+                update_state_after_shutdown(event['timestamp'], event['record_id'])
             log_error(f"복구 전송 성공: record_id={event['record_id']}")
         else:
             log_error(f"복구 전송 실패: record_id={event['record_id']}")
 
     if sent_count > 0:
-        log_error(f"이전 종료 이벤트 {sent_count}개 복구 완료")
+        log_error(f"이전 이벤트 {sent_count}개 복구 완료")
     else:
         log_error("복구된 이벤트 없음")
 
     return sent_count
+
+
+def recover_missed_shutdown_events(server_url: str) -> int:
+    """부팅 시 미전송 이벤트 복구 (하위 호환성을 위한 래퍼)"""
+    return recover_missed_events(server_url)
 
 
 # ==================== WM_ENDSESSION 모니터 ====================
@@ -799,47 +926,88 @@ def run_shutdown_monitor(server_url: str):
         log_error("종료 모니터 종료")
 
 
+def sync_event_logs(server_url: str) -> int:
+    """이벤트 로그를 서버와 동기화
+
+    1. 서버에서 마지막 전송된 이벤트 조회
+    2. 이벤트 로그에서 그 이후의 새 이벤트 수집
+    3. 새 이벤트만 서버로 전송
+
+    Returns: 전송된 이벤트 수
+    """
+    state = load_state()
+
+    # 서버에서 마지막 전송된 boot/shutdown 이벤트 시간 조회
+    last_boot = get_last_event_from_server(server_url, 'boot')
+    last_shutdown = get_last_event_from_server(server_url, 'shutdown')
+
+    # 둘 중 더 오래된 시간 사용 (그 이후의 모든 이벤트 수집)
+    if last_boot and last_shutdown:
+        since_timestamp = min(last_boot, last_shutdown)
+    elif last_boot:
+        since_timestamp = last_boot
+    elif last_shutdown:
+        since_timestamp = last_shutdown
+    else:
+        # 서버에 이벤트가 없으면 최근 1시간 이벤트만 수집
+        since_timestamp = datetime.now() - timedelta(hours=1)
+
+    # 이벤트 로그에서 새 이벤트 수집
+    events = get_all_events_from_log(since_timestamp=since_timestamp, max_events=20)
+
+    if not events:
+        return 0
+
+    sent_count = 0
+
+    for event in events:
+        # 이벤트 전송 (event_record_id로 중복 방지)
+        success = send_event(
+            server_url=server_url,
+            event_type=event['event_type'],
+            timestamp=event['timestamp'],
+            event_detail=event['event_detail'],
+            event_source='event_log',
+            event_record_id=event['record_id']
+        )
+
+        if success:
+            sent_count += 1
+            # 상태 업데이트
+            if event['event_type'] == 'shutdown':
+                update_state_after_shutdown(event['timestamp'], event['record_id'])
+
+    if sent_count > 0:
+        log_error(f"[SYNC] 이벤트 로그 동기화: {sent_count}개 전송")
+
+    return sent_count
+
+
 def send_heartbeat(server_url: str) -> bool:
     """하트비트를 서버로 전송 (실시간 온라인 상태용)
 
     구조화된 에러 처리:
-    - 401 인증 실패: 연속 3회 실패 시 하트비트 건너뛰기 (자동 복구 지원)
     - 500+ 서버 오류: 로깅 후 재시도
     - 네트워크 오류: 로깅 후 재시도
+
+    하트비트 전송 후 이벤트 로그 동기화도 수행
     """
-    config = load_config()
-    api_key = config.get('api_key', '')
-    state = load_state()
-
-    # API 키 무효 상태 확인 (연속 실패 기반)
-    if state.get('api_key_fail_count', 0) >= 3:
-        log_error("[SKIP] API 키 연속 3회 실패 - 하트비트 건너뜀")
-        return False
-
     url = f"{server_url.rstrip('/')}/api/heartbeat"
     params = {
         "computer_name": get_computer_name(),
         "ip_address": get_local_ip()
     }
-    headers = {"X-API-Key": api_key} if api_key else {}
+    headers = {}
+
+    heartbeat_success = False
 
     for attempt in range(MAX_RETRIES):
         try:
             response = requests.post(url, params=params, headers=headers, timeout=10)
 
             if response.status_code == 200:
-                # 성공: 실패 카운터 리셋
-                if state.get('api_key_fail_count', 0) > 0:
-                    state['api_key_fail_count'] = 0
-                    save_state(state)
-                return True
-
-            elif response.status_code == 401:
-                # API 키 인증 실패 - 카운터 증가 (즉시 무효화 X)
-                state['api_key_fail_count'] = state.get('api_key_fail_count', 0) + 1
-                log_error(f"[AUTH] API 키 인증 실패 (401) - 실패 횟수: {state['api_key_fail_count']}/3")
-                save_state(state)
-                return False  # 재시도 무의미
+                heartbeat_success = True
+                break
 
             elif response.status_code >= 500:
                 log_error(f"[SERVER] 서버 오류 (HTTP {response.status_code})")
@@ -856,7 +1024,14 @@ def send_heartbeat(server_url: str) -> bool:
         if attempt < MAX_RETRIES - 1:
             time.sleep(1)
 
-    return False
+    # 하트비트 성공 시 이벤트 로그 동기화
+    if heartbeat_success:
+        try:
+            sync_event_logs(server_url)
+        except Exception as e:
+            log_error(f"[SYNC] 이벤트 로그 동기화 실패: {e}")
+
+    return heartbeat_success
 
 
 # ==================== 설치 관련 기능 ====================
@@ -915,12 +1090,10 @@ def get_bundled_config_path() -> Path:
     return Path(__file__).parent / "config.json"
 
 
-def save_config(server_url: str, api_key: str = None):
+def save_config(server_url: str):
     """설정 파일 저장 (설치 디렉토리에)"""
     config_path = get_install_dir() / "config.json"
     config = {"server_url": server_url}
-    if api_key:
-        config["api_key"] = api_key
     with open(config_path, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
 
@@ -1073,17 +1246,13 @@ def unregister_task(task_name: str) -> bool:
 
 def register_to_server(server_url: str) -> bool:
     """서버에 PC 등록 (설치 시 호출)"""
-    config = load_config()
-    api_key = config.get('api_key', '')
-
     url = f"{server_url.rstrip('/')}/api/computers/register"
     params = {
         "computer_name": get_computer_name(),
         "ip_address": get_local_ip()
     }
-    headers = {"X-API-Key": api_key} if api_key else {}
     try:
-        response = requests.post(url, params=params, headers=headers, timeout=10)
+        response = requests.post(url, params=params, timeout=10)
         if response.status_code == 200:
             log_error("서버 등록 성공")
             return True
@@ -1098,13 +1267,9 @@ def install_agent(server_url: str) -> tuple:
     """Agent 설치"""
     results = []
 
-    # 번들된 config에서 api_key 가져오기
-    config = load_config()
-    api_key = config.get('api_key', '')
-
-    # 설치 디렉토리에 config.json 저장 (api_key 포함)
+    # 설치 디렉토리에 config.json 저장
     try:
-        save_config(server_url, api_key)
+        save_config(server_url)
         results.append(("설정 저장", True))
     except Exception as e:
         log_error(f"설정 저장 실패: {e}")
@@ -1268,7 +1433,6 @@ def auto_install():
     # 번들된 config.json에서 설정 로드 (기존 설치 config 무시)
     config = load_bundled_config()
     server_url = config.get('server_url')
-    api_key = config.get('api_key')
 
     if not server_url:
         print("오류: 설정 파일을 찾을 수 없습니다.")
@@ -1298,7 +1462,7 @@ def auto_install():
 
     # 설정 저장
     try:
-        save_config(server_url, api_key)
+        save_config(server_url)
         current_step += 1
         print_progress(current_step, total_steps, "설치 중...")
     except:

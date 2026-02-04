@@ -634,6 +634,19 @@ function formatDateShort(dateStr) {
     return `${month}/${day} (${dayName})`;
 }
 
+// 이벤트 상세 텍스트 변환
+function getEventDetailText(detail) {
+    const map = {
+        'log_start': '이벤트 로그',
+        'kernel_boot': '커널 부팅',
+        'realtime': '',
+        'normal': '정상',
+        'unexpected': '비정상',
+        'user_initiated': '사용자 요청'
+    };
+    return map[detail] || '';
+}
+
 async function loadAllTimeline() {
     const container = document.getElementById('all-timeline');
     const days = document.getElementById('timeline-days').value;
@@ -670,11 +683,13 @@ async function loadAllTimeline() {
                 const displayName = event.display_name || event.computer_name;
                 const eventIcon = event.event_type === 'boot' ? '&#9650;' : '&#9660;';
                 const eventText = event.event_type === 'boot' ? '시작' : '종료';
+                const detailText = getEventDetailText(event.event_detail);
+                const detailBadge = detailText ? `<span class="event-detail-badge">(${detailText})</span>` : '';
                 html += `
                     <div class="timeline-event ${event.event_type}">
                         <span class="timeline-time">${formatTime(event.timestamp)}</span>
                         <span class="timeline-computer">${displayName}</span>
-                        <span class="timeline-type ${event.event_type}">${eventIcon} ${eventText}</span>
+                        <span class="timeline-type ${event.event_type}">${eventIcon} ${eventText} ${detailBadge}</span>
                     </div>
                 `;
             });
@@ -721,6 +736,19 @@ function initDatePicker() {
     dateInput.value = getLocalDateString(new Date());
 }
 
+// 종료 상태 배지 생성
+function getShutdownStatusBadge(detail) {
+    if (!detail) return '-';
+    const statusMap = {
+        'normal': { text: '정상', class: 'status-normal' },
+        'unexpected': { text: '비정상', class: 'status-unexpected' },
+        'user_initiated': { text: '사용자', class: 'status-user' },
+        'realtime': { text: '실시간', class: 'status-realtime' }
+    };
+    const status = statusMap[detail] || { text: detail, class: '' };
+    return `<span class="shutdown-status ${status.class}">${status.text}</span>`;
+}
+
 async function loadDateSummary() {
     const tbody = document.getElementById('today-summary-body');
     const dateInput = document.getElementById('summary-date');
@@ -732,7 +760,7 @@ async function loadDateSummary() {
         const allComputers = computersData.computers;
 
         if (allComputers.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="3" class="empty-state">등록된 컴퓨터가 없습니다</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="4" class="empty-state">등록된 컴퓨터가 없습니다</td></tr>';
             return;
         }
 
@@ -753,11 +781,13 @@ async function loadDateSummary() {
             const event = eventMap[pc.computer_name];
             const firstBoot = event?.first_boot ? event.first_boot.substring(0, 5) : '-';
             const lastShutdown = event?.last_shutdown ? event.last_shutdown.substring(0, 5) : '-';
+            const shutdownStatus = event?.last_shutdown ? getShutdownStatusBadge(event.shutdown_detail) : '-';
             html += `
                 <tr>
                     <td class="computer-cell">${displayName}</td>
                     <td class="time-cell boot">${firstBoot}</td>
                     <td class="time-cell shutdown">${lastShutdown}</td>
+                    <td class="status-cell">${shutdownStatus}</td>
                 </tr>
             `;
         });
@@ -765,7 +795,7 @@ async function loadDateSummary() {
 
     } catch (error) {
         if (error.message !== 'Authentication required') {
-            tbody.innerHTML = '<tr><td colspan="3" class="empty-state">데이터를 불러올 수 없습니다</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="4" class="empty-state">데이터를 불러올 수 없습니다</td></tr>';
         }
     }
 }
