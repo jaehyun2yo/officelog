@@ -1,4 +1,6 @@
 import re
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -197,9 +199,28 @@ def verify_csrf(request: Request, x_csrf_token: Optional[str] = Header(None, ali
 
 # ==================== 애플리케이션 이벤트 ====================
 
+def _periodic_recovery_loop():
+    """5분마다 오프라인 전환된 컴퓨터의 종료 이벤트 자동 복구"""
+    while True:
+        try:
+            time.sleep(300)  # 5분
+            recovered = database.check_and_recover_offline_shutdowns()
+            if recovered:
+                for r in recovered:
+                    print(f"[Auto-Recovery] {r['computer_name']} shutdown at {r['shutdown_time']}")
+        except Exception as e:
+            print(f"[Auto-Recovery Error] {e}")
+            time.sleep(60)
+
+
 @app.on_event("startup")
 def startup():
     database.init_db()
+
+    # 주기적 종료 이벤트 자동 복구 스레드 시작
+    recovery_thread = threading.Thread(target=_periodic_recovery_loop, daemon=True)
+    recovery_thread.start()
+    print("[Startup] 종료 이벤트 자동 복구 스레드 시작 (5분 간격)")
 
 
 # ==================== Agent 엔드포인트 (API 키 인증) ====================

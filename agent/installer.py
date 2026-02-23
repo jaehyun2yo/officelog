@@ -614,6 +614,28 @@ def check_server_connection(server_url: str) -> bool:
             return False
 
 
+def wait_for_server_connection(server_url: str, max_attempts: int = 5) -> bool:
+    """서버 연결 대기 (exponential backoff)
+
+    부팅 직후 네트워크 미준비 상태를 대비하여 재시도.
+    대기 시간: 3→6→12→24→48초 (최대 ~93초)
+
+    Returns:
+        연결 성공 여부
+    """
+    delay = 3
+    for attempt in range(max_attempts):
+        if check_server_connection(server_url):
+            if attempt > 0:
+                log_error(f"서버 연결 성공 (시도 {attempt + 1}/{max_attempts})")
+            return True
+        log_error(f"서버 연결 대기 중... (시도 {attempt + 1}/{max_attempts}, {delay}초 후 재시도)")
+        time.sleep(delay)
+        delay = min(delay * 2, 48)
+    log_error(f"서버 연결 실패 - {max_attempts}회 시도 후 포기")
+    return False
+
+
 def get_last_event_from_server(server_url: str, event_type: str) -> datetime:
     """서버에서 마지막 전송된 이벤트 시간 조회
 
@@ -661,9 +683,9 @@ def recover_missed_events(server_url: str) -> int:
     state = load_state()
     log_error(f"현재 로컬 상태: {state}")
 
-    # 서버 연결 확인 (연결 안 되면 복구 건너뛰기)
-    log_error(f"서버 연결 확인: {server_url}")
-    if not check_server_connection(server_url):
+    # 서버 연결 대기 (부팅 직후 네트워크 미준비 대비)
+    log_error(f"서버 연결 대기: {server_url}")
+    if not wait_for_server_connection(server_url):
         log_error("서버 연결 실패 - 복구 건너뜀 (다음 부팅 시 재시도)")
         return 0
     log_error("서버 연결 확인 완료")
@@ -700,8 +722,8 @@ def recover_missed_events(server_url: str) -> int:
             log_error(f"상태 초기화 완료: {state}")
         return 0
 
-    # 이벤트 로그에서 last_sent 이후의 모든 이벤트 조회
-    events = get_all_events_from_log(since_timestamp=last_sent, max_events=10)
+    # 이벤트 로그에서 last_sent 이후의 모든 이벤트 조회 (누적 미전송분 대비 확대)
+    events = get_all_events_from_log(since_timestamp=last_sent, max_events=20)
     log_error(f"이벤트 로그에서 조회된 이벤트: {len(events)}개")
     for i, event in enumerate(events):
         log_error(f"  [{i}] {event}")
@@ -981,6 +1003,49 @@ def sync_event_logs(server_url: str) -> int:
         log_error(f"[SYNC] 이벤트 로그 동기화: {sent_count}개 전송")
 
     return sent_count
+
+
+def is_monitor_running() -> bool:
+    """ComputerOff-Monitor 작업 실행 상태 확인"""
+    try:
+        result = subprocess.run(
+            ['schtasks', '/Query', '/TN', 'ComputerOff-Monitor', '/FO', 'CSV', '/NH'],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=0x08000000  # CREATE_NO_WINDOW
+        )
+        if result.returncode == 0:
+            # CSV 출력에서 "Running" 상태 확인
+            return 'Running' in result.stdout or '실행 중' in result.stdout
+        return False
+    except Exception as e:
+        log_error(f"모니터 상태 확인 실패: {e}")
+        return False
+
+
+def restart_monitor_if_needed():
+    """모니터 미실행 시 재시작"""
+    if not is_monitor_running():
+        log_error("[WATCHDOG] 모니터 미실행 감지 - 재시작 시도")
+        try:
+            result = subprocess.run(
+                ['schtasks', '/Run', '/TN', 'ComputerOff-Monitor'],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                creationflags=0x08000000  # CREATE_NO_WINDOW
+            )
+            if result.returncode == 0:
+                log_error("[WATCHDOG] 모니터 재시작 성공")
+            else:
+                log_error(f"[WATCHDOG] 모니터 재시작 실패: {result.stderr}")
+        except Exception as e:
+            log_error(f"[WATCHDOG] 모니터 재시작 실패: {e}")
+
+
+# 하트비트 호출 횟수 카운터 (모니터 watchdog용)
+_heartbeat_call_count = 0
 
 
 def send_heartbeat(server_url: str) -> bool:
@@ -1545,6 +1610,13 @@ def run_agent(event_type: str):
         return
 
     if event_type == 'boot':
+        # 부팅 시 api_key_fail_count 리셋 (교착 해제)
+        state = load_state()
+        if state.get('api_key_fail_count', 0) > 0:
+            state['api_key_fail_count'] = 0
+            save_state(state)
+            log_error("[BOOT] api_key_fail_count 리셋됨")
+
         # 3차 레이어: 이전 종료 이벤트 복구 (미전송분)
         try:
             recovered = recover_missed_shutdown_events(server_url)
@@ -1561,6 +1633,12 @@ def run_agent(event_type: str):
         run_shutdown_monitor(server_url)
 
     elif event_type == 'heartbeat':
+        # 5회(약 5분)마다 모니터 프로세스 생존 확인
+        global _heartbeat_call_count
+        _heartbeat_call_count += 1
+        if _heartbeat_call_count % 5 == 0:
+            restart_monitor_if_needed()
+
         send_heartbeat(server_url)
 
     else:

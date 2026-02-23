@@ -161,7 +161,9 @@ def insert_event(
     conn = get_connection()
     cursor = conn.cursor()
 
-    # event_record_id가 있으면 중복 체크
+    timestamp_str = timestamp.isoformat()
+
+    # 중복 체크 1: event_record_id 기반 (정확한 매칭)
     if event_record_id is not None:
         cursor.execute("""
             SELECT id FROM events
@@ -172,10 +174,22 @@ def insert_event(
             conn.close()
             return existing['id'], True  # 중복
 
+    # 중복 체크 2: 시간 기반 (60초 이내 동일 이벤트 방지 — 자동 복구 중복 방지용)
+    cursor.execute("""
+        SELECT id FROM events
+        WHERE computer_name = ? AND event_type = ?
+        AND ABS((julianday(?) - julianday(timestamp)) * 86400) < 60
+        LIMIT 1
+    """, (computer_name, event_type, timestamp_str))
+    existing = cursor.fetchone()
+    if existing:
+        conn.close()
+        return existing['id'], True  # 중복
+
     cursor.execute(
         """INSERT INTO events (computer_name, event_type, timestamp, event_detail, event_source, event_record_id)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        (computer_name, event_type, timestamp.isoformat(), event_detail, event_source, event_record_id)
+        (computer_name, event_type, timestamp_str, event_detail, event_source, event_record_id)
     )
 
     event_id = cursor.lastrowid
