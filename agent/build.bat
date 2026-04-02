@@ -11,8 +11,7 @@ set INNO_SETUP="C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 set NAS_PATH=\\192.168.0.6\home\데이터\유진MAIN\0. 자동화 프로그램\ComputerOff
 
 REM Read version from version.py
-for /f "tokens=3 delims== " %%a in ('findstr "AGENT_VERSION" version.py') do set VERSION=%%~a
-set VERSION=%VERSION:"=%
+for /f "usebackq tokens=*" %%a in (`python -c "import re; m=re.search(r'AGENT_VERSION\s*=\s*[\x22\x27](.+?)[\x22\x27]', open('version.py','rb').read().decode('utf-8')); print(m.group(1))"`) do set VERSION=%%a
 
 echo ========================================
 echo   ComputerOff Agent Build Script

@@ -51,8 +51,8 @@ Source: "..\dist\agent_windows_x86.exe"; DestDir: "{tmp}"; Flags: ignoreversion 
 Source: "..\dist\agent_windows_win7_x64.exe"; DestDir: "{tmp}"; Flags: ignoreversion dontcopy
 
 [Run]
-; Post-install: register Task Scheduler tasks (default behavior = auto_install)
-Filename: "{app}\{#MyAppExeName}"; StatusMsg: "작업 스케줄러 등록 중..."; Flags: runhidden waituntilterminated
+; Post-install: register Task Scheduler tasks only (--install skips admin check and config overwrite)
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--install"; StatusMsg: "작업 스케줄러 등록 중..."; Flags: runhidden waituntilterminated
 
 [UninstallRun]
 ; Pre-uninstall: remove Task Scheduler tasks
