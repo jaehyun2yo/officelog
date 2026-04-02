@@ -45,7 +45,7 @@ class TestGUI:
         self.root.resizable(True, True)
 
         # 서버 설정 기본값
-        self.server_url = "http://34.64.116.152:8000"
+        self.server_url = "http://office.yjlaser.net:8000"
         self.api_key = "Rk60sPWdkZSFNLLEH71n2iOO1BzEKPUqMVIgl2dIIms"
         self.log_text = None  # 위젯 생성 전 초기화
 

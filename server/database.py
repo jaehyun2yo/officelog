@@ -86,6 +86,12 @@ def init_db():
         )
     """)
 
+    # heartbeats 테이블에 agent_version 컬럼 추가 (마이그레이션)
+    try:
+        cursor.execute("ALTER TABLE heartbeats ADD COLUMN agent_version TEXT")
+    except sqlite3.OperationalError:
+        pass  # already exists
+
     # 설정 테이블 (비밀번호, API 키 등)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS settings (
@@ -294,15 +300,15 @@ def get_computers() -> list[dict]:
     return result
 
 
-def update_heartbeat(computer_name: str, ip_address: Optional[str] = None):
+def update_heartbeat(computer_name: str, ip_address: Optional[str] = None, agent_version: Optional[str] = None):
     """하트비트 업데이트 (온라인 상태 갱신)"""
     conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("""
-        INSERT OR REPLACE INTO heartbeats (computer_name, last_seen, ip_address)
-        VALUES (?, datetime('now', '+9 hours'), ?)
-    """, (computer_name, ip_address))
+        INSERT OR REPLACE INTO heartbeats (computer_name, last_seen, ip_address, agent_version)
+        VALUES (?, datetime('now', '+9 hours'), ?, ?)
+    """, (computer_name, ip_address, agent_version))
 
     conn.commit()
     conn.close()

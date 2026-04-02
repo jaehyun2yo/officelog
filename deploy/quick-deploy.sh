@@ -9,7 +9,7 @@
 set -e
 
 COMMIT_MSG="${1:-deploy: $(date +%Y-%m-%d_%H:%M)}"
-VM_IP="${2:-34.64.116.152}"
+VM_IP="${2:-136.114.40.136}"
 VM_USER="${3:-ubuntu}"
 SSH_KEY="${4:-~/.ssh/id_rsa}"
 

@@ -4,38 +4,39 @@ chcp 65001 >nul
 REM Change to script directory
 cd /d "%~dp0"
 
+REM ==================== Configuration ====================
+set SERVER_URL=http://office.yjlaser.net:8000
+set API_KEY=Rk60sPWdkZSFNLLEH71n2iOO1BzEKPUqMVIgl2dIIms
+set INNO_SETUP="C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+set NAS_PATH=\\192.168.0.6\home\데이터\유진MAIN\0. 자동화 프로그램\ComputerOff
+
+REM Read version from version.py
+for /f "tokens=3 delims== " %%a in ('findstr "AGENT_VERSION" version.py') do set VERSION=%%~a
+set VERSION=%VERSION:"=%
+
 echo ========================================
 echo   ComputerOff Agent Build Script
+echo   Version: %VERSION%
 echo   (32-bit / 64-bit / Windows7)
 echo ========================================
 echo.
 echo Working directory: %cd%
+echo Server URL: %SERVER_URL%
 echo.
 
-REM Server settings
-set SERVER_URL=http://34.64.116.152:8000
-set API_KEY=Rk60sPWdkZSFNLLEH71n2iOO1BzEKPUqMVIgl2dIIms
-
-echo Settings:
-echo   Server URL: %SERVER_URL%
-echo   API Key: %API_KEY%
-echo.
-
-REM Create config.json
-echo [1/6] Creating config.json...
-echo {"server_url": "%SERVER_URL%", "api_key": "%API_KEY%"} > config.json
-echo       Done
+REM Auto mode check (no pause at end)
+if "%1"=="--auto" set AUTO_MODE=1
 
 REM Check Python
 py -0 >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Python Launcher not installed.
-    pause
+    if not "%AUTO_MODE%"=="1" pause
     exit /b 1
 )
 
-REM Install dependencies
-echo [2/6] Installing dependencies...
+REM ==================== [1/8] Dependencies ====================
+echo [1/8] Installing dependencies...
 echo       - 64-bit Python...
 py -3 -m pip install pyinstaller requests --quiet
 
@@ -60,80 +61,152 @@ if errorlevel 1 (
 REM Create output directory
 if not exist "..\dist" mkdir "..\dist"
 
-REM ==================== 64-bit Build (Latest Python) ====================
+REM ==================== [2/8] Config Files ====================
 echo.
-echo [3/6] Building 64-bit (Windows 10/11)...
+echo [2/8] Creating variant config files...
+
+echo {"server_url": "%SERVER_URL%", "api_key": "%API_KEY%", "agent_variant": "x64", "version": "%VERSION%"} > config_x64.json
+echo {"server_url": "%SERVER_URL%", "api_key": "%API_KEY%", "agent_variant": "x86", "version": "%VERSION%"} > config_x86.json
+echo {"server_url": "%SERVER_URL%", "api_key": "%API_KEY%", "agent_variant": "win7_x64", "version": "%VERSION%"} > config_win7_x64.json
+echo       Done
+
+REM ==================== [3/8] 64-bit Build ====================
+echo.
+echo [3/8] Building 64-bit (Windows 10/11)...
+copy /y config_x64.json config.json >nul
 py -3 -m PyInstaller --onefile --windowed --name agent_windows_x64 ^
     --hidden-import requests ^
     --hidden-import json ^
     --hidden-import socket ^
     --add-data "config.json;." ^
+    --add-data "version.py;." ^
+    --add-data "auto_updater.py;." ^
     installer.py
 echo       Done
 
-REM ==================== 32-bit Build (Python 3.8) ====================
+REM ==================== [4/8] 32-bit Build ====================
 echo.
-echo [4/6] Building 32-bit...
+echo [4/8] Building 32-bit...
 if "%BUILD_32%"=="1" (
+    copy /y config_x86.json config.json >nul
     py -3.8-32 -m PyInstaller --onefile --windowed --name agent_windows_x86 ^
         --hidden-import requests ^
         --hidden-import json ^
         --hidden-import socket ^
         --add-data "config.json;." ^
+        --add-data "version.py;." ^
+        --add-data "auto_updater.py;." ^
         installer.py
     echo       Done
 ) else (
     echo       Skipped (Python 3.8-32 not found)
 )
 
-REM ==================== Windows 7 Build (Python 3.8 64-bit) ====================
+REM ==================== [5/8] Windows 7 Build ====================
 echo.
-echo [5/6] Building Windows 7 compatible 64-bit...
+echo [5/8] Building Windows 7 compatible 64-bit...
 if "%BUILD_WIN7_64%"=="1" (
+    copy /y config_win7_x64.json config.json >nul
     py -3.8 -m PyInstaller --onefile --windowed --name agent_windows_win7_x64 ^
         --hidden-import requests ^
         --hidden-import json ^
         --hidden-import socket ^
         --add-data "config.json;." ^
+        --add-data "version.py;." ^
+        --add-data "auto_updater.py;." ^
         installer.py
     echo       Done
 ) else (
     echo       Skipped (Python 3.8 64-bit not found)
 )
 
-REM ==================== Move results ====================
-echo.
-echo [6/6] Organizing output files...
-
-REM Move results
+REM Move EXE results
 if exist "dist\agent_windows_x64.exe" move /y "dist\agent_windows_x64.exe" "..\dist\" >nul
 if exist "dist\agent_windows_x86.exe" move /y "dist\agent_windows_x86.exe" "..\dist\" >nul
 if exist "dist\agent_windows_win7_x64.exe" move /y "dist\agent_windows_win7_x64.exe" "..\dist\" >nul
 
-REM Cleanup
+REM Cleanup build artifacts
 rmdir /s /q build 2>nul
 rmdir /s /q dist 2>nul
 del *.spec 2>nul
 del config.json 2>nul
+del config_x64.json 2>nul
+del config_x86.json 2>nul
+del config_win7_x64.json 2>nul
+
+REM ==================== [6/8] Inno Setup ====================
+echo.
+echo [6/8] Building Inno Setup installer...
+if exist %INNO_SETUP% (
+    %INNO_SETUP% /DMyAppVersion=%VERSION% installer.iss
+    echo       Done
+) else (
+    echo [WARNING] Inno Setup not found at %INNO_SETUP%
+    echo       Skipped
+)
+
+REM ==================== [7/8] version.json ====================
+echo.
+echo [7/8] Generating version.json...
+
+REM Get current timestamp
+for /f "tokens=1-3 delims=/ " %%a in ('date /t') do set DDATE=%%a-%%b-%%c
+for /f "tokens=1-2 delims=: " %%a in ('time /t') do set TTIME=%%a:%%b:00
+
+(
+echo {
+echo   "version": "%VERSION%",
+echo   "variants": {
+echo     "x64": "agent_windows_x64.exe",
+echo     "x86": "agent_windows_x86.exe",
+echo     "win7_x64": "agent_windows_win7_x64.exe"
+echo   },
+echo   "installer_filename": "ComputerOff_Setup_v%VERSION%.exe",
+echo   "updated_at": "%DDATE%T%TTIME%"
+echo }
+) > "..\dist\version.json"
+echo       Done
+
+REM ==================== [8/8] Deploy ====================
+echo.
+echo [8/8] Deploying...
+
+REM Deploy to NAS
+echo       - NAS deploy...
+if exist "%NAS_PATH%" (
+    copy /y "..\dist\agent_windows_x64.exe" "%NAS_PATH%\" >nul 2>&1
+    copy /y "..\dist\agent_windows_x86.exe" "%NAS_PATH%\" >nul 2>&1
+    copy /y "..\dist\agent_windows_win7_x64.exe" "%NAS_PATH%\" >nul 2>&1
+    if exist "..\dist\ComputerOff_Setup_v%VERSION%.exe" copy /y "..\dist\ComputerOff_Setup_v%VERSION%.exe" "%NAS_PATH%\" >nul 2>&1
+    copy /y "..\dist\version.json" "%NAS_PATH%\" >nul 2>&1
+    echo         NAS deploy done
+) else (
+    echo [WARNING] NAS path not accessible: %NAS_PATH%
+    echo         NAS deploy skipped
+)
+
+REM Deploy to server (agent_updates for auto-update)
+echo       - Server deploy...
+where scp >nul 2>&1
+if not errorlevel 1 (
+    echo         Use: scp ..\dist\agent_windows_*.exe ..\dist\version.json ubuntu@office.yjlaser.net:/opt/computeroff/agent_updates/
+    echo         (Run manually or set up SSH key)
+) else (
+    echo         SCP not available. Upload manually to server.
+)
 
 echo.
 echo ========================================
-echo   Build Complete!
+echo   Build Complete! v%VERSION%
 echo.
 echo   Output files in ..\dist\:
 echo.
-echo   [64-bit] Windows 10/11 (Latest Python)
-echo     - agent_windows_x64.exe
-echo.
-echo   [32-bit] Windows 7/8/10/11 (Python 3.8)
-if "%BUILD_32%"=="1" echo     - agent_windows_x86.exe
-if not "%BUILD_32%"=="1" echo     - Not built (Python 3.8-32 required)
-echo.
-echo   [Windows 7 64-bit] Python 3.8 based
-if "%BUILD_WIN7_64%"=="1" echo     - agent_windows_win7_x64.exe
-if not "%BUILD_WIN7_64%"=="1" echo     - Not built (Python 3.8 required)
-echo.
-echo   Note: Windows 7 does not support Python 3.9+
-echo         32-bit and win7_x64 use Python 3.8
+echo   [64-bit] agent_windows_x64.exe
+if "%BUILD_32%"=="1" echo   [32-bit] agent_windows_x86.exe
+if not "%BUILD_32%"=="1" echo   [32-bit] Not built (Python 3.8-32 required)
+if "%BUILD_WIN7_64%"=="1" echo   [Win7-64] agent_windows_win7_x64.exe
+if not "%BUILD_WIN7_64%"=="1" echo   [Win7-64] Not built (Python 3.8 required)
+if exist "..\dist\ComputerOff_Setup_v%VERSION%.exe" echo   [Setup] ComputerOff_Setup_v%VERSION%.exe
+echo   [JSON]  version.json
 echo ========================================
-pause
+if not "%AUTO_MODE%"=="1" pause

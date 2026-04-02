@@ -1,3 +1,4 @@
+import json as json_module
 import re
 import threading
 import time
@@ -21,6 +22,8 @@ from slowapi.errors import RateLimitExceeded
 
 import database
 
+
+AGENT_UPDATES_DIR = Path(__file__).parent / "agent_updates"
 
 # ==================== Rate Limiter 설정 ====================
 limiter = Limiter(key_func=get_remote_address)
@@ -247,15 +250,35 @@ def create_event(request: Request, event: EventCreate):
 def heartbeat(
     request: Request,
     computer_name: str,
-    ip_address: Optional[str] = None
+    ip_address: Optional[str] = None,
+    agent_version: Optional[str] = None,
+    agent_variant: Optional[str] = None
 ):
     """하트비트 수신 (Agent용, API 키 필수)"""
     # computer_name 검증
     if not COMPUTER_NAME_PATTERN.match(computer_name):
         raise HTTPException(status_code=422, detail="잘못된 computer_name 형식")
 
-    database.update_heartbeat(computer_name, ip_address)
-    return {"status": "ok"}
+    database.update_heartbeat(computer_name, ip_address, agent_version)
+
+    response = {"status": "ok"}
+
+    # Check for agent update if version info provided
+    if agent_version and agent_variant:
+        version_file = AGENT_UPDATES_DIR / "version.json"
+        if version_file.exists():
+            try:
+                with open(version_file, 'r', encoding='utf-8') as f:
+                    version_info = json_module.load(f)
+                latest = version_info.get("version", "")
+                if latest and latest != agent_version:
+                    response["update_available"] = True
+                    response["latest_version"] = latest
+                    response["download_url"] = f"/api/agent/download/{agent_variant}"
+            except Exception:
+                pass
+
+    return response
 
 
 @app.post("/api/computers/register")
@@ -518,6 +541,40 @@ def get_all_events_timeline_api(
     """전체 컴퓨터 이벤트 타임라인"""
     events = database.get_all_events_timeline(days, limit)
     return {"events": events, "days": days, "count": len(events)}
+
+
+# ==================== Agent 자동 업데이트 API ====================
+
+@app.get("/api/agent/version")
+@limiter.limit("60/minute")
+def get_agent_version(request: Request):
+    """에이전트 최신 버전 정보"""
+    version_file = AGENT_UPDATES_DIR / "version.json"
+    if not version_file.exists():
+        raise HTTPException(status_code=404, detail="버전 정보를 찾을 수 없습니다")
+
+    with open(version_file, 'r', encoding='utf-8') as f:
+        return json_module.load(f)
+
+
+@app.get("/api/agent/download/{variant}")
+@limiter.limit("10/minute")
+def download_agent(request: Request, variant: str):
+    """에이전트 EXE 다운로드"""
+    valid_variants = ("x64", "x86", "win7_x64")
+    if variant not in valid_variants:
+        raise HTTPException(status_code=400, detail=f"variant는 {valid_variants} 중 하나여야 합니다")
+
+    exe_name = f"agent_windows_{variant}.exe"
+    exe_path = AGENT_UPDATES_DIR / exe_name
+    if not exe_path.exists():
+        raise HTTPException(status_code=404, detail=f"{exe_name}를 찾을 수 없습니다")
+
+    return FileResponse(
+        path=str(exe_path),
+        filename=exe_name,
+        media_type="application/octet-stream"
+    )
 
 
 # ==================== 정적 파일 및 루트 ====================

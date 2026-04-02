@@ -24,6 +24,12 @@ from xml.etree import ElementTree
 
 import requests
 
+# 버전 정보
+try:
+    from version import AGENT_VERSION
+except ImportError:
+    AGENT_VERSION = "0.0.0"  # fallback for development
+
 # ==================== Windows API 상수 ====================
 WM_QUERYENDSESSION = 0x0011
 WM_ENDSESSION = 0x0016
@@ -1046,6 +1052,8 @@ def restart_monitor_if_needed():
 
 # 하트비트 호출 횟수 카운터 (모니터 watchdog용)
 _heartbeat_call_count = 0
+# 업데이트 체크 카운터 (60회 = 약 1시간마다)
+_update_check_counter = 0
 
 
 def send_heartbeat(server_url: str) -> bool:
@@ -1055,16 +1063,22 @@ def send_heartbeat(server_url: str) -> bool:
     - 500+ 서버 오류: 로깅 후 재시도
     - 네트워크 오류: 로깅 후 재시도
 
-    하트비트 전송 후 이벤트 로그 동기화도 수행
+    하트비트 전송 후 이벤트 로그 동기화 및 자동 업데이트 체크도 수행
     """
+    config = load_config()
+    agent_variant = config.get('agent_variant', '')
+
     url = f"{server_url.rstrip('/')}/api/heartbeat"
     params = {
         "computer_name": get_computer_name(),
-        "ip_address": get_local_ip()
+        "ip_address": get_local_ip(),
+        "agent_version": AGENT_VERSION,
+        "agent_variant": agent_variant
     }
     headers = {}
 
     heartbeat_success = False
+    response_data = {}
 
     for attempt in range(MAX_RETRIES):
         try:
@@ -1072,6 +1086,10 @@ def send_heartbeat(server_url: str) -> bool:
 
             if response.status_code == 200:
                 heartbeat_success = True
+                try:
+                    response_data = response.json()
+                except Exception:
+                    pass
                 break
 
             elif response.status_code >= 500:
@@ -1095,6 +1113,25 @@ def send_heartbeat(server_url: str) -> bool:
             sync_event_logs(server_url)
         except Exception as e:
             log_error(f"[SYNC] 이벤트 로그 동기화 실패: {e}")
+
+    # 자동 업데이트 체크 (60회마다 = 약 1시간)
+    if heartbeat_success and response_data.get('update_available') and agent_variant:
+        global _update_check_counter
+        _update_check_counter += 1
+        if _update_check_counter % 60 == 1:
+            try:
+                from auto_updater import trigger_auto_update
+                trigger_auto_update(
+                    server_url=server_url,
+                    current_version=AGENT_VERSION,
+                    variant=agent_variant,
+                    install_dir=get_install_dir(),
+                    log_func=log_error
+                )
+            except SystemExit:
+                raise
+            except Exception as e:
+                log_error(f"[UPDATE] 자동 업데이트 오류: {e}")
 
     return heartbeat_success
 
@@ -1155,10 +1192,12 @@ def get_bundled_config_path() -> Path:
     return Path(__file__).parent / "config.json"
 
 
-def save_config(server_url: str):
+def save_config(server_url: str, agent_variant: str = None):
     """설정 파일 저장 (설치 디렉토리에)"""
     config_path = get_install_dir() / "config.json"
-    config = {"server_url": server_url}
+    config = {"server_url": server_url, "version": AGENT_VERSION}
+    if agent_variant:
+        config["agent_variant"] = agent_variant
     with open(config_path, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
 
@@ -1646,6 +1685,47 @@ def run_agent(event_type: str):
         send_event(server_url, event_type)
 
 
+def register_all_tasks() -> dict:
+    """모든 Task Scheduler 작업 등록 (Inno Setup에서 호출용)
+
+    Returns:
+        dict: 각 작업 이름 → 성공 여부
+    """
+    results = {}
+    results['boot'] = register_task("ComputerOff-Boot", "boot")
+    results['monitor'] = register_task("ComputerOff-Monitor", "monitor")
+    results['shutdown'] = register_task("ComputerOff-Shutdown", "shutdown")
+    results['heartbeat'] = register_task("ComputerOff-Heartbeat", "heartbeat")
+    return results
+
+
+def cli_install():
+    """명령줄 설치 (Inno Setup 후처리용, admin 체크 생략)"""
+    config = load_config()
+    server_url = config.get('server_url')
+
+    if not server_url:
+        print("오류: config.json에 server_url이 없습니다.")
+        sys.exit(1)
+
+    print("ComputerOff Agent 작업 등록 중...")
+
+    # 서버 등록
+    register_to_server(server_url)
+
+    # Task Scheduler 등록
+    results = register_all_tasks()
+
+    critical_tasks = ['boot', 'monitor', 'heartbeat']
+    failed = [name for name in critical_tasks if not results.get(name)]
+
+    if failed:
+        print(f"오류: 필수 작업 등록 실패 - {', '.join(failed)}")
+        sys.exit(1)
+
+    print("작업 등록 완료!")
+
+
 def cli_uninstall():
     """명령줄 제거"""
     if not is_admin():
@@ -1673,17 +1753,27 @@ def main():
                 run_agent(event_type)
             return
 
+        if sys.argv[1] == '--install':
+            cli_install()
+            return
+
         if sys.argv[1] == '--uninstall':
             cli_uninstall()
             return
 
+        if sys.argv[1] == '--version':
+            print(f"ComputerOff Agent v{AGENT_VERSION}")
+            return
+
         if sys.argv[1] == '--help':
-            print("ComputerOff Agent")
+            print(f"ComputerOff Agent v{AGENT_VERSION}")
             print("")
             print("사용법:")
-            print("  agent_windows.exe              자동 설치 (관리자 권한 필요)")
-            print("  agent_windows.exe --uninstall  제거")
-            print("  agent_windows.exe --run <type> 이벤트 실행 (내부용)")
+            print("  computeroff_agent.exe              자동 설치 (관리자 권한 필요)")
+            print("  computeroff_agent.exe --install    작업 등록 (Inno Setup용)")
+            print("  computeroff_agent.exe --uninstall  제거")
+            print("  computeroff_agent.exe --version    버전 출력")
+            print("  computeroff_agent.exe --run <type> 이벤트 실행 (내부용)")
             print("")
             print("이벤트 타입:")
             print("  boot       부팅 이벤트")
