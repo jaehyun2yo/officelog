@@ -1,0 +1,10 @@
+{
+  "version": "1.1.0",
+  "variants": {
+    "x64": "agent_windows_x64.exe",
+    "x86": "agent_windows_x86.exe",
+    "win7_x64": "agent_windows_win7_x64.exe"
+  },
+  "installer_filename": "ComputerOff_Setup_v1.1.0.exe",
+  "updated_at": "2026-04-20--T오후:12:00"
+}
