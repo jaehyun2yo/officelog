@@ -730,6 +730,21 @@ header p {
     background: #2980b9;
 }
 
+.resync-btn {
+    background: #95a5a6;
+    color: white;
+    border: none;
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: background 0.2s;
+}
+
+.resync-btn:hover {
+    background: #7f8c8d;
+}
+
 /* 차트 컨테이너 */
 .chart-container {
     position: relative;

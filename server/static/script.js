@@ -760,7 +760,7 @@ async function loadDateSummary() {
         const allComputers = computersData.computers;
 
         if (allComputers.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" class="empty-state">등록된 컴퓨터가 없습니다</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="5" class="empty-state">등록된 컴퓨터가 없습니다</td></tr>';
             return;
         }
 
@@ -782,12 +782,14 @@ async function loadDateSummary() {
             const firstBoot = event?.first_boot ? event.first_boot.substring(0, 5) : '-';
             const lastShutdown = event?.last_shutdown ? event.last_shutdown.substring(0, 5) : '-';
             const shutdownStatus = event?.last_shutdown ? getShutdownStatusBadge(event.shutdown_detail) : '-';
+            const resyncBtn = `<button class="resync-btn" onclick="requestResync('${pc.computer_name.replace(/'/g, "\\'")}')">재집계</button>`;
             html += `
                 <tr>
                     <td class="computer-cell">${displayName}</td>
                     <td class="time-cell boot">${firstBoot}</td>
                     <td class="time-cell shutdown">${lastShutdown}</td>
                     <td class="status-cell">${shutdownStatus}</td>
+                    <td class="resync-cell">${resyncBtn}</td>
                 </tr>
             `;
         });
@@ -795,8 +797,46 @@ async function loadDateSummary() {
 
     } catch (error) {
         if (error.message !== 'Authentication required') {
-            tbody.innerHTML = '<tr><td colspan="4" class="empty-state">데이터를 불러올 수 없습니다</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="5" class="empty-state">데이터를 불러올 수 없습니다</td></tr>';
         }
+    }
+}
+
+async function requestResync(hostname) {
+    const daysStr = prompt(`"${hostname}" 컴퓨터의 Windows 이벤트 로그를 서버로 재집계합니다.\n과거 며칠치를 가져올까요? (1~30, 기본 7)`, '7');
+    if (daysStr === null) return;
+
+    const days = parseInt(daysStr, 10);
+    if (!Number.isInteger(days) || days < 1 || days > 30) {
+        alert('1~30 사이의 숫자를 입력해주세요.');
+        return;
+    }
+
+    try {
+        const headers = {};
+        if (csrfToken) {
+            headers['X-CSRF-Token'] = csrfToken;
+        }
+
+        const response = await fetch(
+            `/api/computers/${encodeURIComponent(hostname)}/resync?days=${days}`,
+            { method: 'POST', headers: headers }
+        );
+
+        if (response.ok) {
+            alert(`재집계 요청 완료. 최대 1분 내 Agent가 처리합니다.\n처리 후 페이지를 새로고침해 결과를 확인하세요.`);
+        } else if (response.status === 403) {
+            alert('CSRF 토큰이 만료되었습니다. 페이지를 새로고침하세요.');
+            location.reload();
+        } else if (response.status === 401) {
+            alert('로그인이 필요합니다.');
+            location.reload();
+        } else {
+            const data = await response.json().catch(() => ({}));
+            alert(`재집계 요청 실패: ${data.detail || response.status}`);
+        }
+    } catch (error) {
+        alert('요청 중 오류가 발생했습니다.');
     }
 }
 

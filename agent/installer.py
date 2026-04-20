@@ -20,6 +20,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 from xml.etree import ElementTree
 
 import requests
@@ -954,34 +955,59 @@ def run_shutdown_monitor(server_url: str):
         log_error("종료 모니터 종료")
 
 
-def sync_event_logs(server_url: str) -> int:
+def ack_resync_to_server(server_url: str) -> bool:
+    """재집계 완료를 서버에 알림"""
+    url = f"{server_url.rstrip('/')}/api/resync/ack"
+    params = {"computer_name": get_computer_name()}
+    try:
+        response = requests.post(url, params=params, timeout=10)
+        return response.status_code == 200
+    except Exception as e:
+        log_error(f"[RESYNC] ack 실패: {e}")
+        return False
+
+
+def sync_event_logs(
+    server_url: str,
+    since_override: Optional[datetime] = None,
+    max_events: int = 20
+) -> int:
     """이벤트 로그를 서버와 동기화
 
-    1. 서버에서 마지막 전송된 이벤트 조회
+    1. 서버에서 마지막 전송된 이벤트 조회 (since_override 있으면 건너뜀)
     2. 이벤트 로그에서 그 이후의 새 이벤트 수집
     3. 새 이벤트만 서버로 전송
+
+    Args:
+        server_url: 서버 URL
+        since_override: 지정 시 서버 조회 없이 이 시각부터 수집 (대시보드 재집계 요청용)
+        max_events: 한 번에 긁어올 최대 이벤트 수 (재집계는 500까지)
 
     Returns: 전송된 이벤트 수
     """
     state = load_state()
 
-    # 서버에서 마지막 전송된 boot/shutdown 이벤트 시간 조회
-    last_boot = get_last_event_from_server(server_url, 'boot')
-    last_shutdown = get_last_event_from_server(server_url, 'shutdown')
-
-    # 둘 중 더 오래된 시간 사용 (그 이후의 모든 이벤트 수집)
-    if last_boot and last_shutdown:
-        since_timestamp = min(last_boot, last_shutdown)
-    elif last_boot:
-        since_timestamp = last_boot
-    elif last_shutdown:
-        since_timestamp = last_shutdown
+    if since_override is not None:
+        since_timestamp = since_override
+        log_error(f"[RESYNC] since_override={since_override}, max_events={max_events}")
     else:
-        # 서버에 이벤트가 없으면 최근 1시간 이벤트만 수집
-        since_timestamp = datetime.now() - timedelta(hours=1)
+        # 서버에서 마지막 전송된 boot/shutdown 이벤트 시간 조회
+        last_boot = get_last_event_from_server(server_url, 'boot')
+        last_shutdown = get_last_event_from_server(server_url, 'shutdown')
+
+        # 둘 중 더 오래된 시간 사용 (그 이후의 모든 이벤트 수집)
+        if last_boot and last_shutdown:
+            since_timestamp = min(last_boot, last_shutdown)
+        elif last_boot:
+            since_timestamp = last_boot
+        elif last_shutdown:
+            since_timestamp = last_shutdown
+        else:
+            # 서버에 이벤트가 없으면 최근 1시간 이벤트만 수집
+            since_timestamp = datetime.now() - timedelta(hours=1)
 
     # 이벤트 로그에서 새 이벤트 수집
-    events = get_all_events_from_log(since_timestamp=since_timestamp, max_events=20)
+    events = get_all_events_from_log(since_timestamp=since_timestamp, max_events=max_events)
 
     if not events:
         return 0
@@ -1114,6 +1140,18 @@ def send_heartbeat(server_url: str) -> bool:
         except Exception as e:
             log_error(f"[SYNC] 이벤트 로그 동기화 실패: {e}")
 
+        # 대시보드 재집계 요청 처리
+        resync_since_str = response_data.get('resync_since')
+        if resync_since_str:
+            try:
+                since_dt = datetime.fromisoformat(resync_since_str)
+                log_error(f"[RESYNC] 재집계 요청 수신: since={since_dt}")
+                sent = sync_event_logs(server_url, since_override=since_dt, max_events=500)
+                log_error(f"[RESYNC] 재집계 완료: {sent}개 전송")
+                ack_resync_to_server(server_url)
+            except Exception as e:
+                log_error(f"[RESYNC] 재집계 실패 (다음 하트비트에 재시도): {e}")
+
     # 자동 업데이트 체크 (60회마다 = 약 1시간)
     if heartbeat_success and response_data.get('update_available') and agent_variant:
         global _update_check_counter
@@ -1239,10 +1277,11 @@ def create_task_scheduler_xml(event_type: str) -> str:
     allow_hard_terminate = "true"
 
     if event_type == 'boot':
+        # 시스템 부팅 시작 시 실행 (SYSTEM 컨텍스트라 LogonTrigger 사용 불가)
         trigger = """
-    <LogonTrigger>
+    <BootTrigger>
       <Enabled>true</Enabled>
-    </LogonTrigger>"""
+    </BootTrigger>"""
     elif event_type == 'heartbeat':
         # 1분마다 반복 실행 (실시간 온라인 상태 확인용)
         trigger = """
@@ -1255,11 +1294,11 @@ def create_task_scheduler_xml(event_type: str) -> str:
       </Repetition>
     </TimeTrigger>"""
     elif event_type == 'monitor':
-        # 로그온 시 시작, 무제한 실행 (종료 모니터)
+        # 부팅 시 시작, 무제한 실행 (종료 모니터, SYSTEM)
         trigger = """
-    <LogonTrigger>
+    <BootTrigger>
       <Enabled>true</Enabled>
-    </LogonTrigger>"""
+    </BootTrigger>"""
         execution_time_limit = "PT0S"  # 무제한
         allow_hard_terminate = "false"  # 강제 종료 방지
     else:
@@ -1279,8 +1318,8 @@ def create_task_scheduler_xml(event_type: str) -> str:
   </Triggers>
   <Principals>
     <Principal id="Author">
-      <LogonType>InteractiveToken</LogonType>
-      <RunLevel>LeastPrivilege</RunLevel>
+      <UserId>S-1-5-18</UserId>
+      <RunLevel>HighestAvailable</RunLevel>
     </Principal>
   </Principals>
   <Settings>
@@ -1317,8 +1356,11 @@ def register_task(task_name: str, event_type: str) -> bool:
         with open(xml_path, 'w', encoding='utf-16') as f:
             f.write(xml_content)
 
+        # /RU SYSTEM /RL HIGHEST로 SYSTEM 계정 + 최고 권한 이중 지정
+        # (XML의 UserId=S-1-5-18과 함께, 일부 Windows 버전에서 XML만으로 무시되는 경우 방지)
         result = subprocess.run(
-            ['schtasks', '/Create', '/TN', task_name, '/XML', str(xml_path), '/F'],
+            ['schtasks', '/Create', '/TN', task_name, '/XML', str(xml_path),
+             '/F', '/RU', 'SYSTEM', '/RL', 'HIGHEST'],
             capture_output=True,
             text=True
         )

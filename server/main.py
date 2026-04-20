@@ -278,6 +278,11 @@ def heartbeat(
             except Exception:
                 pass
 
+    # 대시보드에서 요청된 재집계가 있으면 응답에 since 포함
+    pending_since = database.get_pending_resync(computer_name)
+    if pending_since is not None:
+        response["resync_since"] = pending_since.isoformat()
+
     return response
 
 
@@ -295,6 +300,17 @@ def register_computer(
 
     database.register_computer(computer_name, ip_address)
     return {"status": "ok"}
+
+
+@app.post("/api/resync/ack")
+@limiter.limit("30/minute")
+def ack_resync(request: Request, computer_name: str):
+    """재집계 완료 알림 (Agent용)"""
+    if not COMPUTER_NAME_PATTERN.match(computer_name):
+        raise HTTPException(status_code=422, detail="잘못된 computer_name 형식")
+
+    acked = database.ack_resync(computer_name)
+    return {"status": "ok", "acked": acked}
 
 
 @app.get("/api/events/last")
@@ -395,6 +411,28 @@ def update_computer(
     """컴퓨터 표시 이름 변경 (CSRF 보호)"""
     database.set_computer_display_name(hostname, data.display_name)
     return {"status": "ok", "hostname": hostname, "display_name": data.display_name}
+
+
+@app.post("/api/computers/{hostname}/resync")
+def request_resync(
+    request: Request,
+    hostname: str,
+    days: int = 7,
+    _session: str = Depends(verify_session),
+    _csrf: str = Depends(verify_csrf)
+):
+    """특정 컴퓨터에 대해 Windows 이벤트 로그 재집계 요청 (CSRF 보호)
+
+    Agent가 다음 하트비트(최대 60초) 때 요청을 감지하여
+    since 이후의 boot/shutdown 이벤트를 Windows 이벤트 로그에서 긁어 전송한다.
+    """
+    if not COMPUTER_NAME_PATTERN.match(hostname):
+        raise HTTPException(status_code=422, detail="잘못된 computer_name 형식")
+    if not 1 <= days <= 30:
+        raise HTTPException(status_code=422, detail="days는 1~30 범위여야 합니다")
+
+    since = database.request_resync(hostname, days)
+    return {"status": "ok", "hostname": hostname, "days": days, "since": since.isoformat()}
 
 
 @app.delete("/api/computers/{hostname}")

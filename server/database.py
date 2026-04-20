@@ -1,7 +1,7 @@
 import sqlite3
 import hashlib
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -138,6 +138,16 @@ def init_db():
         cursor.execute("ALTER TABLE sessions ADD COLUMN last_activity DATETIME DEFAULT CURRENT_TIMESTAMP")
     except sqlite3.OperationalError:
         pass  # 이미 존재
+
+    # 재집계 요청 테이블 (대시보드에서 누락 이벤트 재수집 요청)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS resync_requests (
+            computer_name TEXT PRIMARY KEY,
+            since TIMESTAMP NOT NULL,
+            requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            consumed_at DATETIME
+        )
+    """)
 
     conn.commit()
     conn.close()
@@ -822,6 +832,70 @@ def get_computer_daily_summary(computer_name: str, days: int = 30) -> list[dict]
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+# ==================== 재집계 요청 관리 ====================
+
+def request_resync(computer_name: str, days: int) -> datetime:
+    """재집계 요청 등록 (대시보드에서 호출)
+
+    Args:
+        computer_name: 대상 컴퓨터
+        days: 과거 며칠치를 재집계할지 (1~30)
+
+    Returns:
+        since datetime (KST 기준, 과거 N일 전 00:00)
+    """
+    if not 1 <= days <= 30:
+        raise ValueError("days는 1~30 범위여야 합니다")
+
+    now_kst = datetime.now(timezone(timedelta(hours=9))).replace(tzinfo=None)
+    since = (now_kst - timedelta(days=days)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO resync_requests (computer_name, since, requested_at, consumed_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP, NULL)
+        ON CONFLICT(computer_name) DO UPDATE SET
+            since = excluded.since,
+            requested_at = CURRENT_TIMESTAMP,
+            consumed_at = NULL
+    """, (computer_name, since.isoformat()))
+    conn.commit()
+    conn.close()
+    return since
+
+
+def get_pending_resync(computer_name: str) -> Optional[datetime]:
+    """처리되지 않은 재집계 요청 조회 (하트비트 응답용)"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT since FROM resync_requests
+        WHERE computer_name = ? AND consumed_at IS NULL
+        LIMIT 1
+    """, (computer_name,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return datetime.fromisoformat(row['since'])
+
+
+def ack_resync(computer_name: str) -> bool:
+    """Agent가 재집계 완료를 알림"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE resync_requests
+        SET consumed_at = CURRENT_TIMESTAMP
+        WHERE computer_name = ? AND consumed_at IS NULL
+    """, (computer_name,))
+    updated = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
 
 
 def get_all_events_timeline(days: int = 7, limit: int = 100) -> list[dict]:
