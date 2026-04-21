@@ -1,0 +1,71 @@
+name: Deploy to GCP VM
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'server/**'
+      - 'deploy/**'
+      - 'requirements.txt'
+      - '.github/workflows/deploy.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-gcp-vm
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy server to GCP VM
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.GCP_SSH_KEY }}
+
+      - name: Add VM host key to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H "${{ secrets.GCP_VM_IP }}" >> ~/.ssh/known_hosts
+
+      - name: Deploy to VM (git pull + restart service)
+        run: |
+          ssh "${{ secrets.GCP_VM_USER }}@${{ secrets.GCP_VM_IP }}" bash -s <<'REMOTE'
+          set -euo pipefail
+
+          echo "== VM 배포 시작 =="
+          cd /opt/computeroff
+
+          echo "-- git pull --"
+          git fetch origin master
+          git reset --hard origin/master
+
+          echo "-- 의존성 설치 --"
+          source venv/bin/activate
+          pip install --quiet --upgrade pip
+          pip install --quiet -r server/requirements.txt
+          deactivate
+
+          echo "-- 서비스 재시작 --"
+          sudo systemctl restart computeroff
+
+          echo "-- 서비스 상태 --"
+          sudo systemctl is-active computeroff
+          sudo systemctl status computeroff --no-pager --lines=5
+
+          echo "== VM 배포 완료 =="
+          REMOTE
+
+      - name: Health check
+        run: |
+          sleep 3
+          curl --fail --max-time 10 "http://${{ secrets.GCP_VM_IP }}:8000/" \
+            || curl --fail --max-time 10 "http://${{ secrets.GCP_VM_IP }}:8000/docs" \
+            || (echo "Health check 실패 - 서비스가 응답하지 않음" && exit 1)
+          echo "Health check 통과"
