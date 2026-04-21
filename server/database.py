@@ -190,15 +190,42 @@ def insert_event(
             conn.close()
             return existing['id'], True  # 중복
 
-    # 중복 체크 2: 시간 기반 (60초 이내 동일 이벤트 방지 — 자동 복구 중복 방지용)
+    # 중복 체크 2: 시간 기반 (60초 이내 동일 event_type)
+    #
+    # 이 체크는 원래 자동 복구(check_and_recover_offline_shutdowns)가
+    # last_seen 근사값으로 생성한 shutdown 이벤트와, 같은 순간의 실시간 전송이
+    # 이중 기록되는 것을 막기 위한 장치.
+    #
+    # 그러나 Windows 이벤트 로그에서 가져온 이벤트(event_record_id 존재)는
+    # 실제 발생 시각이 정확하다. 근사값 이벤트(event_record_id IS NULL)가
+    # 이미 저장되어 있을 때 그대로 중복 처리하면 정확한 타임스탬프로
+    # 업데이트할 기회를 잃어버린다 → 대시보드 "마지막 종료"가 부정확한
+    # 자동 복구 값으로 고정됨.
+    #
+    # 정책:
+    # - 새 이벤트가 record_id 있음 & 기존 이벤트가 record_id 없음
+    #   → 기존 행을 덮어써서 정확한 값으로 교체 (권위 있는 원본 우선)
+    # - 그 외 (둘 다 record_id 있음, 또는 둘 다 없음)
+    #   → 기존대로 중복 처리
     cursor.execute("""
-        SELECT id FROM events
+        SELECT id, event_record_id FROM events
         WHERE computer_name = ? AND event_type = ?
         AND ABS((julianday(?) - julianday(timestamp)) * 86400) < 60
         LIMIT 1
     """, (computer_name, event_type, timestamp_str))
     existing = cursor.fetchone()
     if existing:
+        if event_record_id is not None and existing['event_record_id'] is None:
+            # 권위 있는 이벤트 로그 기반 이벤트로 근사값 이벤트를 덮어쓴다
+            cursor.execute(
+                """UPDATE events
+                   SET timestamp = ?, event_detail = ?, event_source = ?, event_record_id = ?
+                   WHERE id = ?""",
+                (timestamp_str, event_detail, event_source, event_record_id, existing['id'])
+            )
+            conn.commit()
+            conn.close()
+            return existing['id'], False  # 덮어씀 (신규 취급)
         conn.close()
         return existing['id'], True  # 중복
 
@@ -1022,10 +1049,12 @@ def check_and_recover_offline_shutdowns() -> list[dict]:
         computer_name = comp['computer_name']
         last_seen = comp['last_seen']
 
-        # shutdown 이벤트 삽입
+        # shutdown 이벤트 삽입 (last_seen 근사값, event_record_id 없음)
+        # event_source='auto_recovery'로 태깅하여 이후 재집계 시
+        # 실제 이벤트 로그 기반의 정확한 shutdown으로 덮어써질 수 있도록 함
         cursor.execute("""
-            INSERT INTO events (computer_name, event_type, timestamp)
-            VALUES (?, 'shutdown', ?)
+            INSERT INTO events (computer_name, event_type, timestamp, event_source)
+            VALUES (?, 'shutdown', ?, 'auto_recovery')
         """, (computer_name, last_seen))
 
         recovered.append({

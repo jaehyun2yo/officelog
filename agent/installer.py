@@ -311,7 +311,8 @@ def get_boot_events_from_log(since_timestamp: datetime = None, max_events: int =
              '/rd:true'],  # 최신순
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=30,
+            creationflags=0x08000000  # CREATE_NO_WINDOW: EXE에서 호출 시 CMD 창 표시 방지
         )
 
         if result.returncode != 0:
@@ -435,7 +436,8 @@ def get_shutdown_events_from_log(since_timestamp: datetime = None, max_events: i
              '/rd:true'],  # 최신순
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=30,
+            creationflags=0x08000000  # CREATE_NO_WINDOW: EXE에서 호출 시 CMD 창 표시 방지
         )
 
         if result.returncode != 0:
@@ -1141,14 +1143,26 @@ def send_heartbeat(server_url: str) -> bool:
             log_error(f"[SYNC] 이벤트 로그 동기화 실패: {e}")
 
         # 대시보드 재집계 요청 처리
+        # ack 실패로 서버 consumed_at이 NULL로 남을 경우를 대비해 로컬 멱등성 체크:
+        # 동일 since가 또 내려오면 재집계(wevtutil 500개 조회)는 스킵하고 ack만 재시도
         resync_since_str = response_data.get('resync_since')
         if resync_since_str:
             try:
                 since_dt = datetime.fromisoformat(resync_since_str)
-                log_error(f"[RESYNC] 재집계 요청 수신: since={since_dt}")
-                sent = sync_event_logs(server_url, since_override=since_dt, max_events=500)
-                log_error(f"[RESYNC] 재집계 완료: {sent}개 전송")
-                ack_resync_to_server(server_url)
+                state = load_state()
+                last_processed = state.get('last_processed_resync_since')
+
+                if last_processed == resync_since_str:
+                    log_error(f"[RESYNC] 이미 처리한 요청 재수신 (since={since_dt}), ack만 재시도")
+                    ack_resync_to_server(server_url)
+                else:
+                    log_error(f"[RESYNC] 재집계 요청 수신: since={since_dt}")
+                    sent = sync_event_logs(server_url, since_override=since_dt, max_events=500)
+                    log_error(f"[RESYNC] 재집계 완료: {sent}개 전송")
+                    # ack 호출 전에 로컬에 처리 완료 기록 — ack가 실패해도 다음 하트비트에서 재집계 반복 방지
+                    state['last_processed_resync_since'] = resync_since_str
+                    save_state(state)
+                    ack_resync_to_server(server_url)
             except Exception as e:
                 log_error(f"[RESYNC] 재집계 실패 (다음 하트비트에 재시도): {e}")
 
@@ -1424,6 +1438,20 @@ def install_agent(server_url: str) -> tuple:
     # 서버에 PC 등록 (즉시 관리자 페이지에 표시)
     register_result = register_to_server(server_url)
     results.append(("서버 등록", register_result))
+
+    # 구버전 Agent에서 넘어온 경우, 서버에 미처리 상태로 남아있는 재집계 요청을
+    # 즉시 소비(ack)해서 하트비트 루프 반복을 끊는다.
+    # 실패해도 설치는 계속 진행 — 다음 하트비트에서 멱등성 로직이 동일하게 정리함.
+    try:
+        clear_result = ack_resync_to_server(server_url)
+        log_error(f"[INSTALL] 기존 재집계 요청 ack: {clear_result}")
+        # ack와 동시에 로컬에도 "이번 설치로 이월된 요청은 처리한 것으로 간주" 표시
+        # → 다음 하트비트에서 서버가 재집계를 다시 내려주지 못해도 wevtutil 루프 방지
+        state = load_state()
+        state['installed_at'] = datetime.now().isoformat()
+        save_state(state)
+    except Exception as e:
+        log_error(f"[INSTALL] 재집계 ack 시도 실패 (무시): {e}")
 
     boot_result = register_task("ComputerOff-Boot", "boot")
     results.append(("부팅 작업 등록", boot_result))
@@ -1811,11 +1839,11 @@ def main():
             print(f"ComputerOff Agent v{AGENT_VERSION}")
             print("")
             print("사용법:")
-            print("  computeroff_agent.exe              자동 설치 (관리자 권한 필요)")
-            print("  computeroff_agent.exe --install    작업 등록 (Inno Setup용)")
-            print("  computeroff_agent.exe --uninstall  제거")
-            print("  computeroff_agent.exe --version    버전 출력")
-            print("  computeroff_agent.exe --run <type> 이벤트 실행 (내부용)")
+            print("  agent.exe              자동 설치 (관리자 권한 필요)")
+            print("  agent.exe --install    작업 등록 (Inno Setup용)")
+            print("  agent.exe --uninstall  제거")
+            print("  agent.exe --version    버전 출력")
+            print("  agent.exe --run <type> 이벤트 실행 (내부용)")
             print("")
             print("이벤트 타입:")
             print("  boot       부팅 이벤트")

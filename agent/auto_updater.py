@@ -144,14 +144,11 @@ echo [%date% %time%] Stopping monitor... >> "{log_path}"
 schtasks /End /TN "ComputerOff-Monitor" >nul 2>&1
 timeout /t 2 /nobreak >nul
 
-REM Step 3: Wait for heartbeat process (PID {pid}) to exit
-echo [%date% %time%] Waiting for PID {pid}... >> "{log_path}"
-:wait_pid
-tasklist /FI "PID eq {pid}" 2>nul | find "{pid}" >nul
-if %errorlevel%==0 (
-    timeout /t 1 /nobreak >nul
-    goto wait_pid
-)
+REM Step 3: Wait for heartbeat process (PID {pid}) to release EXE lock
+REM tasklist | find 파이프라인이 숨김 콘솔에서 새 창을 띄우는 문제를 피하기 위해
+REM 단순 타임아웃으로 대체. 남은 프로세스는 Step 4의 taskkill /F로 정리됨.
+echo [%date% %time%] Waiting 5 seconds for PID {pid} to exit... >> "{log_path}"
+timeout /t 5 /nobreak >nul
 
 REM Step 4: Kill any remaining agent processes
 echo [%date% %time%] Killing remaining processes... >> "{log_path}"
@@ -221,13 +218,19 @@ def execute_update(script_path: Path, log_func=None):
         if log_func:
             log_func("[UPDATE] 업데이트 스크립트 실행 중...")
 
-        # Run batch script detached
+        # Run batch script with no console window.
+        # CREATE_NO_WINDOW와 DETACHED_PROCESS는 MSDN상 상호 배타적이라
+        # 같이 쓰면 Windows가 기본값으로 폴백하여 자식 파이프라인에 콘솔이 생길 수 있음.
+        # CREATE_NO_WINDOW 단독 + STARTUPINFO.SW_HIDE 조합이 가장 확실하게 창을 숨긴다.
         CREATE_NO_WINDOW = 0x08000000
-        DETACHED_PROCESS = 0x00000008
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
         subprocess.Popen(
             ['cmd', '/c', str(script_path)],
-            creationflags=CREATE_NO_WINDOW | DETACHED_PROCESS,
-            close_fds=True
+            creationflags=CREATE_NO_WINDOW,
+            close_fds=True,
+            startupinfo=startupinfo
         )
 
         if log_func:

@@ -1,4 +1,4 @@
-; ComputerOff Agent - Inno Setup Installer Script
+; Agent - Inno Setup Installer Script
 ; Bundles x64, x86, win7_x64 EXE variants and auto-detects OS to install the correct one.
 ;
 ; Build command:
@@ -8,23 +8,24 @@
   #define MyAppVersion "1.0.0"
 #endif
 
-#define MyAppName "ComputerOff Agent"
+#define MyAppName "Agent"
 #define MyAppPublisher "유진레이저목형"
-#define MyAppExeName "computeroff_agent.exe"
+#define MyAppExeName "agent.exe"
 #define MyServerURL "http://office.yjlaser.net:8000"
 
 [Setup]
+; AppId는 변경하지 않음 — 기존 설치본과 동일한 제품으로 인식되어 업그레이드 경로 유지.
 AppId={{B3F7E8A1-4D2C-4F5A-9B8E-1C3D5A7F9E2B}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName=C:\ComputerOff
+DefaultDirName=C:\Agent
 DisableDirPage=yes
 DisableProgramGroupPage=yes
 DisableReadyPage=yes
 OutputDir=..\dist
-OutputBaseFilename=ComputerOff_Setup_v{#MyAppVersion}
+OutputBaseFilename=Agent_Setup_v{#MyAppVersion}
 Compression=lzma2
 SolidCompression=yes
 PrivilegesRequired=admin
@@ -33,7 +34,8 @@ Uninstallable=yes
 UninstallDisplayName={#MyAppName}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 CloseApplications=force
-CloseApplicationsFilter=computeroff_agent.exe
+; 신규 설치본 EXE와 (호환성 위해 남아있을 수 있는) 구 EXE 둘 다 닫음
+CloseApplicationsFilter=agent.exe,computeroff_agent.exe
 ArchitecturesAllowed=x86 x64
 ArchitecturesInstallIn64BitMode=x64
 ; No desktop icon, no start menu
@@ -150,7 +152,7 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  SourcePath, DestPath: String;
+  SourcePath, DestPath, LegacyExePath: String;
 begin
   if CurStep = ssInstall then
   begin
@@ -160,7 +162,7 @@ begin
     // Extract the selected EXE from the archive
     ExtractTemporaryFile(SelectedVariant);
 
-    // Copy the selected EXE as computeroff_agent.exe to install dir
+    // Copy the selected EXE as {#MyAppExeName} to install dir
     SourcePath := ExpandConstant('{tmp}\') + SelectedVariant;
     DestPath := ExpandConstant('{app}\{#MyAppExeName}');
 
@@ -179,6 +181,18 @@ begin
       Log('Copied ' + SelectedVariant + ' -> ' + DestPath);
     end;
 
+    // Remove legacy EXE if present (구 설치본에서 남아있을 수 있는 파일).
+    // installer.py의 --install 단계에서 Task Scheduler가 새 EXE 경로로 재등록되므로
+    // 레거시 파일은 더 이상 참조되지 않는다 → 안전하게 삭제.
+    LegacyExePath := ExpandConstant('{app}\computeroff_agent.exe');
+    if FileExists(LegacyExePath) and (CompareText(LegacyExePath, DestPath) <> 0) then
+    begin
+      if DeleteFile(LegacyExePath) then
+        Log('Removed legacy EXE: ' + LegacyExePath)
+      else
+        Log('WARNING: Could not remove legacy EXE: ' + LegacyExePath);
+    end;
+
     // Create config.json
     CreateConfigJson;
   end;
@@ -189,7 +203,7 @@ begin
   Result := True;
   // Detect variant early for logging
   DetectAgentVariant;
-  Log('ComputerOff Agent Installer v{#MyAppVersion}');
+  Log('Agent Installer v{#MyAppVersion}');
   Log('Selected variant: ' + SelectedVariant);
   Log('OS: Windows ' + IntToStr(GetWindowsVersionMajor) + '.' + IntToStr(GetWindowsVersionMinor));
   Log('64-bit install mode: ' + BoolToStr(Is64BitInstallMode_Custom));
